@@ -28,8 +28,9 @@ Barcha hujjatlar `docs/` papkasida. Boshlash uchun:
 | [`AGENTS.md`](AGENTS.md) | **Birinchi o'qiladigan fayl** — ish jarayoni va majburiy xavfsizlik ro'yxati |
 | [`docs/00-tz-qisqacha.md`](docs/00-tz-qisqacha.md) | Texnik topshiriq qisqartmasi: rollar, RBAC, roadmap |
 | [`docs/05-tolqinlar-rejasi.md`](docs/05-tolqinlar-rejasi.md) | Ish tartibi: 6 bosqich × 5 to'lqin |
-| [`docs/07-xavfsizlik.md`](docs/07-xavfsizlik.md) | Xavfsizlik modeli, hujum yuzasi, himoya choralari |
-| [`docs/TZ.md`](docs/TZ.md) | Boshlang'ich to'liq TZ (v1.1) |
+| [`docs/07-xavfsizlik.md`](docs/07-xavfsizlik.md) | **Xavfsizlik modeli** — hujum yuzasi, himoya choralari, har bir yangi sahifa uchun majburiy ro'yxat, ma'lum ochiq kamchiliklar |
+| [`docs/tz/01-umumiy-va-funksional.md`](docs/tz/01-umumiy-va-funksional.md) | To'liq TZ, 1–3-bo'lim: maqsad, atamalar, RBAC, funksional talablar |
+| [`docs/tz/02-ai-va-texnik.md`](docs/tz/02-ai-va-texnik.md) | To'liq TZ, 4–11-bo'lim: test moduli, AI, NFR, arxitektura, ERD, roadmap |
 
 ## ✅ Talablar
 
@@ -67,6 +68,11 @@ Brauzerda: **http://localhost:3000** (avtomatik `/uz` ga yo'naltiradi).
 > Ishlab chiqarish rejimini sinash uchun `npm run build && npm start`.
 > Bu rejimda `.env` da **`AUTH_URL`** ko'rsatilishi kerak.
 
+> **Seed faqat lokal bazada ishlaydi.** `DATABASE_URL` lokal host'ga
+> ishora qilmasa, seed to'xtaydi — chunki u ma'lum parolli ADMIN hisobini
+> yaratadi. Ataylab kerak bo'lsa `SEED_ALLOW_REMOTE=1`.
+> Batafsil: [`docs/07-xavfsizlik.md`](docs/07-xavfsizlik.md) 10-bo'lim.
+
 ## 👤 Demo hisoblar
 
 | Rol | Login |
@@ -79,20 +85,26 @@ Brauzerda: **http://localhost:3000** (avtomatik `/uz` ga yo'naltiradi).
 Parol `prisma/seed.ts` da `SEED_PASSWORD` orqali beriladi. Har bir rol o'ziga mos
 yon menyuni ko'radi (RBAC).
 
+> **Bu ro'yxat login sahifasida faqat ishlab chiqish rejimida ko'rinadi**
+> (`NODE_ENV !== "production"`). Ishlab chiqarish build'ida u umuman
+> bundle'ga tushmaydi — aks holda amaldagi ADMIN login'i ochiq sahifada
+> yozilib turardi va bu brute force hamda fishing uchun tayyor nishon
+> bo'lardi.
+
 ## 📂 Loyiha tuzilishi
 
 ```text
 prisma/
   schema.prisma       # To'liq ma'lumotlar modeli
-  migrations/         # Migratsiya tarixi (0_init)
-  seed.ts             # Demo ma'lumotlar
+  migrations/         # Migratsiya tarixi (0_init dan boshlanadi)
+  seed.ts             # Demo ma'lumotlar (faqat lokal baza)
 messages/             # Tarjimalar: uz.json, ru.json, en.json
 docs/                 # Hujjatlar (TZ, konvensiyalar, reja, xavfsizlik)
 tests/                # Vitest testlari
 src/
   auth.ts             # Auth.js konfiguratsiyasi
   auth.config.ts      # Sessiya, trustHost, callback'lar
-  middleware.ts       # Til yo'naltirish + sessiya tekshiruvi
+  middleware.ts       # Til yo'naltirish + sessiya tekshiruvi + so'rov chegarasi
   i18n/               # i18n konfiguratsiya va navigatsiya
   lib/                # db, env, rbac, scope, audit, logger, rate-limit
   components/         # UI (shadcn), sidebar, til almashtirgich
