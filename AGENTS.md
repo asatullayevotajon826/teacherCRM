@@ -24,7 +24,8 @@ ma'lumotlari** saqlanadi. Bir dona ochiq qolgan tekshiruv butun bazani oshkor
 qilishi mumkin.
 
 To'liq xavfsizlik modeli, hujum yuzasi tahlili va himoya choralari:
-**`docs/07-xavfsizlik.md`**.
+**`docs/07-xavfsizlik.md`**. U yerdagi **3-bo'lim — yagona haqiqat manbai**;
+quyidagi jadval o'sha ro'yxatning qisqartmasi.
 
 ### Har bir yangi sahifa/action uchun MAJBURIY ro'yxat
 
@@ -34,7 +35,7 @@ qolib ketsa — ish tugallanmagan hisoblanadi.
 | № | Tekshiruv | Qanday |
 | --- | --- | --- |
 | 1 | **Autentifikatsiya** | `requireAuth` / `requireRole(...)` — sahifa va action'ning boshida |
-| 2 | **Rol cheklovi** | `roleAllowedPaths` (`src/lib/rbac.ts`) + `createAction({ roles })`. Ikki joyda ham! |
+| 2 | **Rol cheklovi** | `roleAllowedPaths` **va** `EXISTING_APP_PAGES` (`src/lib/rbac.ts`) + `createAction({ roles })`. Uch joyda ham! |
 | 3 | **Ma'lumot doirasi** | Ro'yxatlarda `AND: [..., xScope(user)]`; bitta yozuvda `assertCanAccessX(user, id)` |
 | 4 | **IDOR** | Yolg'iz `findUnique({ where: { id } })` — **TAQIQLANGAN** |
 | 5 | **Kirish validatsiyasi** | zod sxema. `searchParams` ham ishonchsiz manba — regex/enum bilan tekshiriladi |
@@ -42,7 +43,10 @@ qolib ketsa — ish tugallanmagan hisoblanadi.
 | 7 | **Yozuv amali** | Faqat kerakli rollar. `ACCOUNTANT` o'quvchini ko'radi, lekin **yozmaydi**; `PARENT` faqat ko'radi |
 | 8 | **Audit** | Har bir yozuv/o'zgartirish/o'chirish `logAudit` bilan yoziladi |
 | 9 | **Xato xabari** | "Topilmadi" va "ruxsat yo'q" **bir xil** javob beradi — aks holda ID larni sanab chiqish (enumeration) mumkin bo'ladi |
-| 10 | **Maxfiy ma'lumot** | Parol, token, telefon log'ga yozilmaydi (`redactMeta`, `maskIdentifier`) |
+| 10 | **Maxfiy ma'lumot** | Parol, token, telefon log'ga yozilmaydi (`redactMeta`, `maskIdentifier`). Xom `console.error(error)` — taqiqlangan, `logError` ishlatiladi |
+| 11 | **Chegara** | Ro'yxat qaytaruvchi joyda sahifalash yoki qat'iy `take`. Massiv qabul qilsa zod'da `.max(...)` |
+| 12 | **Fayl yuklash** | Kengaytma, hajm (5 MB), qator (1000) va ustun (200) chegarasi. Katak formula sifatida tozalanadi |
+| 13 | **CSV/Excel yuklab berish** | Formula tozalash **ikki yo'lda ham**: serverda (`excel.ts`) va klientda (`import-wizard.tsx`). Ikkinchisini tekshirmaslik PR #66 → #80 hodisasiga olib keldi |
 
 ### Doim yodda tutiladigan hujum ko'rinishlari
 
@@ -53,6 +57,9 @@ qolib ketsa — ish tugallanmagan hisoblanadi.
 - **Rolni oshirish** — o'qituvchi admin sahifasiga kirishga urinishi.
 - **Enumeration** — javoblar farqidan qaysi ID/email mavjudligini aniqlash.
 - **Ommaviy yuklash** — juda katta massiv yoki fayl yuborish (zod'da `.max(...)` chegarasi).
+- **Formula injection** — import qilingan ism `=HYPERLINK(...)` bo'lsa, u
+  yuklab olingan CSV/Excel orqali **adminning kompyuterida** bajariladi.
+  Server logida iz qolmaydi.
 - **Fail-closed** — rol notanish yoki ID yo'q bo'lsa, ruxsat **kengaymaydi**, torayadi
   (`MATCH_NOTHING`).
 
@@ -82,8 +89,11 @@ sifatida ishlatiladi.
 | `docs/04-migratsiyalar.md` | Migratsiya tarixi va qoidalari |
 | `docs/05-tolqinlar-rejasi.md` | **Ish tartibi:** 6 bosqich × 5 to'lqin (0→1→2→3→4) |
 | `docs/06-olchov-natijalari.md` | 0-to'lqin o'lchov natijalari va ularga asoslangan ustuvorliklar |
-| `docs/07-xavfsizlik.md` | **Xavfsizlik modeli:** hujum yuzasi, rollar matritsasi, DDoS/fishing himoyasi |
-| `docs/TZ.md` | Boshlang'ich TZ (v1.1) — tarixiy hujjat |
+| `docs/07-xavfsizlik.md` | **Xavfsizlik modeli:** hujum yuzasi, rollar matritsasi, DDoS/fishing himoyasi, majburiy ro'yxat (3-bo'lim), ma'lum ochiq kamchiliklar (11-bo'lim) |
+
+> **Eslatma.** Ilgari bu jadvalda `docs/TZ.md` ("boshlang'ich TZ v1.1") qatori
+> bor edi — lekin bunday fayl repoda **yo'q**. Havola buzuq edi va agentni
+> mavjud bo'lmagan hujjatni izlashga majburlardi. To'liq TZ — `docs/tz/`.
 
 ## 3. Ish jarayoni (MAJBURIY)
 
@@ -99,6 +109,11 @@ sifatida ishlatiladi.
 6. Commit xabarlari: `feat(scope): ...`, `fix(scope): ...` — o'zbek tilida izoh.
 7. Bosqich tugagach `docs/01-loyiha-holati.md` va `docs/03-keyingi-ishlar.md`
    yangilanadi — shunda bilim chatda emas, repoda saqlanadi.
+8. **PR tavsifiga tuzatishni faqat push natijasi tasdiqlangandan keyin yozing.**
+   Tavsifni oldin yozib, keyin push qilish PR #78 va #79 da ikki marta
+   yo'qotishga olib keldi: merge bo'lgan PR ichida "tuzatdim" deb yozilgan,
+   lekin fayl commit'ga tushmagan edi. Merge'dan keyin o'sha shoxga commit
+   qo'shish ham **yo'qotish** — avval PR ochiqligini tekshiring.
 
 ## 4. Egasi qanday test qiladi
 
@@ -143,8 +158,10 @@ npx prisma generate
    `DAYS.some((d) => d === value)` ishlating.
 4. **Har bir yozuv amali doira (scope) tekshiruvidan o'tadi** — `src/lib/scope.ts`.
    Yolg'iz `findUnique({ where: { id } })` — taqiqlangan (IDOR).
-5. **Yangi sahifa qo'shsangiz**, `src/lib/rbac.ts` (`roleAllowedPaths`) va
-   `src/components/nav-config.ts` ni birga yangilang.
+5. **Yangi sahifa qo'shsangiz**, `src/lib/rbac.ts` da **`roleAllowedPaths` va
+   `EXISTING_APP_PAGES` ikkisini ham**, hamda `src/components/nav-config.ts` ni
+   birga yangilang. `EXISTING_APP_PAGES` esdan chiqsa `tests/lib/rbac.test.ts`
+   yiqiladi — bu ataylab shunday qilingan.
 6. **Katta faylni push qilgandan keyin qayta o'qib tekshiring** (ayniqsa JSON) —
    payload kesilishi jimgina sodir bo'ladi.
 7. **Interfeysda "yaxshilash" kiritmang.** Egasi so'ramagan vizual o'zgarish
@@ -153,6 +170,14 @@ npx prisma generate
    skrol konteyneri yaratmang — ikkita skrolbar chiqadi.
 9. **Muhit o'zgaruvchilari `AUTH_` prefiksi bilan** (Auth.js v5). `NEXTAUTH_SECRET`
    va `NEXTAUTH_URL` — v4 nomlari, kod ularni **o'qimaydi**.
+10. **Xavfsizlik yordamchisi yozsangiz, o'sha mantiq klient tomonida
+    takrorlanmaganini tekshiring.** `sanitizeExcelCell` serverda formula
+    injection'ni yopdi, lekin brauzerdagi `toCsv` o'sha himoyadan chetda qoldi
+    va teshik 14 PR davomida ochiq turdi (PR #66 → #80). Ikki nusxa bo'lsa,
+    izohda "ikkisi bir xil bo'lishi shart" deb yozib qo'yiladi.
+11. **`src/lib/excel.ts` ni klient komponentiga import qilmang** — u `xlsx`
+    paketini brauzer bundle'iga tortib keladi. Kichik regex'ni nusxalash
+    afzal (10-qoidaga qarang).
 
 ## 6. Texnologiyalar
 
