@@ -70,10 +70,24 @@ function assertSafeSeedTarget(): { targetIsLocal: boolean } {
   const targetIsLocal = LOCAL_DB_HOSTS.has(host);
 
   if (!targetIsLocal && env.SEED_ALLOW_REMOTE !== "1") {
+    /*
+     * XOST NOMI ATAYLAB CHOP ETILMAYDI.
+     *
+     * Ilgari bu matnda `host: "${host}"` bor edi. Xato `process.exit(1)`
+     * bilan chiqadi, ya'ni matn CI logiga tushadi — log esa uchinchi tomon
+     * xizmatida saqlanadi va ko'pincha kengroq doiraga ko'rinadi.
+     * Baza hosti razvedka uchun qiymatli: hujumchi qaysi provayder va
+     * qaysi manzil ishlatilayotganini biladi.
+     *
+     * Xostni ko'rish kerak bo'lsa u `.env` faylida turadi — loglardan
+     * o'qish shart emas.
+     */
     throw new Error(
-      `Seed to'xtatildi: DATABASE_URL lokal emas (host: "${host}").\n` +
+      "Seed to'xtatildi: DATABASE_URL lokal bazaga ishora qilmaydi.\n" +
         "Seed ma'lum parolli demo ADMIN hisobini yaratadi — bu masofaviy " +
         "bazada to'liq huquqli orqa eshik degani.\n" +
+        "Nishon manzilni `.env` dagi DATABASE_URL dan tekshiring " +
+        "(host nomi bu xabarda ataylab ko'rsatilmadi — xabar CI logiga tushadi).\n" +
         "Agar bu ataylab qilinayotgan bo'lsa (masalan sinov serveri), " +
         "SEED_ALLOW_REMOTE=1 qo'yib qayta ishga tushiring."
     );
