@@ -41,12 +41,38 @@ export type ImportWizardProps<TRow> = {
 
 const MAX_VISIBLE_ROWS = 200;
 
+/**
+ * `src/lib/excel.ts` dagi DANGEROUS_CELL_START ning nusxasi.
+ *
+ * NIMA UCHUN NUSXA: `excel.ts` `xlsx` paketini import qiladi, bu fayl esa
+ * "use client". Undan import qilsak butun `xlsx` brauzer bundle'iga tushib
+ * qolardi (yuzlab kilobayt + keraksiz hujum yuzasi).
+ *
+ * IKKALA REGEX BIR XIL BO'LIB QOLISHI SHART — birini o'zgartirsang,
+ * ikkinchisini ham o'zgartir.
+ */
+const DANGEROUS_CELL_START = /^[=+\-@\t\r]/;
+
+/**
+ * CSV formula injection himoyasi. Excel/LibreOffice `=`, `+`, `-`, `@`
+ * bilan boshlangan katakni FORMULA deb bajaradi. Import qilinayotgan
+ * Excel'dagi F.I.Sh. hujumchi nazoratida bo'lishi mumkin, shuning uchun
+ * bu faylga tushishidan oldin boshiga apostrof qo'yiladi.
+ */
+function sanitizeCsvCell(value: string): string {
+  if (value === "") return value;
+  return DANGEROUS_CELL_START.test(value) ? `'${value}` : value;
+}
+
 function toCsv(rows: string[][]): string {
   return rows
     .map((row) =>
       row
         .map((cell) => {
-          const value = cell ?? "";
+          // TARTIB MUHIM: avval formula neytrallanadi, keyin qo'shtirnoqqa
+          // olinadi. Teskari tartibda apostrof qo'shtirnoq ichida qolib,
+          // Excel katakni yana formula deb o'qishi mumkin.
+          const value = sanitizeCsvCell(cell ?? "");
           return /[",;\n]/.test(value) ? `"${value.replace(/"/g, '""')}"` : value;
         })
         .join(";")
