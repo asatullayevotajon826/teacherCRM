@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { clampScore, denseRank } from "./scoring";
 
 /**
  * REYTING — HISOB-KITOB VA VALIDATSIYA
@@ -11,6 +12,10 @@ import { z } from "zod";
  * Bu fayl faqat MATEMATIKA bilan shug'ullanadi — bazaga ham, sessiyaga ham
  * murojaat qilmaydi. "Bu odam kimning reytingini ko'rishi mumkin?" savoli
  * scope.ts va sahifaning o'zida hal qilinadi.
+ *
+ * Umumiy hisob-kitob (o'rtacha, ball siqish, o'rin belgilash, `topN`)
+ * `./scoring` ga ko'chirilgan — u yagona manba. Bu fayl faqat REYTINGGA
+ * xos qismini saqlaydi: ulushlar, formula, ranglar, sozlama sxemasi.
  *
  * YAKUNIY BALL FORMULASI (egasi bilan kelishilgan)
  * -----------------------------------------------
@@ -30,6 +35,14 @@ import { z } from "zod";
 
 /** Sozlama jadvalidagi yakka qatorning ID si (singleton). */
 export const RANKING_SETTING_ID = "global";
+
+/**
+ * Umumiy hisob-kitob yordamchilari — yagona manba `./scoring`.
+ *
+ * `export ... from` qilinadi, shuning uchun `@/lib/ranking` dan
+ * `averageOf` yoki `parseTopN` import qilayotgan mavjud kod o'zgarmaydi.
+ */
+export { averageOf, parseTopN } from "./scoring";
 
 export type RankingSettings = {
   /** Baho ulushi, foizda (0–100). */
@@ -120,24 +133,6 @@ export function quarterColor(quarterName: number): string {
 // Hisob-kitob
 // ------------------------------------------------------------------
 
-/**
- * O'rtacha qiymat, bir kasrli aniqlikda.
- *
- * Bo'sh ro'yxatda `null` qaytadi — 0 deb ko'rsatish yolg'on bo'lardi:
- * "bahosi yomon" emas, "bahosi hali yo'q".
- */
-export function averageOf(values: number[]): number | null {
-  if (values.length === 0) return null;
-  const sum = values.reduce((total, value) => total + value, 0);
-  return Math.round((sum / values.length) * 10) / 10;
-}
-
-function clampScore(value: number): number {
-  if (value < 0) return 0;
-  if (value > 100) return 100;
-  return Math.round(value * 10) / 10;
-}
-
 export type FinalScoreInput = {
   gradeAverage: number | null;
   testAverage: number | null;
@@ -179,51 +174,25 @@ export type RankInput = { id: string; score: number | null };
 /**
  * O'rin belgilash — KETMA-KET (dense) usulda: 1, 1, 2, 3.
  *
- * Egasining qat'iy talabi: bir xil ball bir xil o'rin oladi, undan keyingi
- * ball esa DARHOL keyingi o'rinni oladi. Ya'ni ikki bola birinchi bo'lsa,
- * uchinchisi 2-o'rinda turadi (3-o'rinda emas). Sport reytinglarida boshqa
- * qoida bor, lekin bu yerda qoidani egasi belgilaydi.
+ * Mantiqning o'zi `./scoring` dagi `denseRank` da. Bu yerda faqat reyting
+ * sahifasi kutgan SHAKL yasaladi: balli `null` bo'lgan o'quvchi ham natijada
+ * bo'lishi kerak, lekin o'rni `null` bo'lib.
  *
- * Balli `null` bo'lgan o'quvchiga o'rin berilmaydi.
+ * DIQQAT — TARTIB MUHIM: avval o'rin olganlar (ball kamayishi bo'yicha),
+ * keyin o'rinsizlar qo'shiladi. Chaqiruvchi kod Map ning kirish tartibiga
+ * tayanishi mumkin, shuning uchun bu tartib ataylab saqlangan.
  */
 export function rankByScore(rows: RankInput[]): Map<string, number | null> {
+  const ranked = denseRank(rows.map((row) => ({ id: row.id, value: row.score })));
+
   const result = new Map<string, number | null>();
-
-  const scored = rows
-    .filter((row): row is { id: string; score: number } => row.score !== null)
-    .sort((left, right) => right.score - left.score);
-
-  let rank = 0;
-  let previous: number | null = null;
-
-  for (const row of scored) {
-    if (previous === null || row.score !== previous) {
-      rank += 1;
-      previous = row.score;
-    }
-    result.set(row.id, rank);
-  }
+  ranked.forEach((place, id) => result.set(id, place));
 
   for (const row of rows) {
     if (!result.has(row.id)) result.set(row.id, null);
   }
 
   return result;
-}
-
-/**
- * "Dastlabki N o'rin" maydoni.
- *
- * Bo'sh qoldirilsa `null` — butun ro'yxat ko'rsatiladi. Yuqori chegara 500:
- * URL ga qo'lda katta raqam yozib sahifani cho'ktirishning oldini oladi.
- */
-export function parseTopN(raw?: string): number | null {
-  if (!raw || raw.trim() === "") return null;
-  const parsed = Number(raw);
-  if (!Number.isFinite(parsed)) return null;
-  const rounded = Math.trunc(parsed);
-  if (rounded < 1) return null;
-  return rounded > 500 ? 500 : rounded;
 }
 
 /** Diagrammada ko'rsatiladigan ustunlar soni (jadval to'liq qoladi). */

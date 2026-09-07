@@ -33,7 +33,7 @@ import { idField, toNumber } from "./academics";
  * Klientdan baho ID si OLINMAYDI.
  *
  * `lessonId: null` qatorlarini tozalash va cheklovni kuchaytirish —
- * 1-to'lqin, PR F (migratsiya talab qiladi).
+ * 1-to'lqin, PR F3 (migratsiya va backfill talab qiladi).
  *
  * Bu fayl faqat ma'lumot shakli va hisob-kitob bilan shug'ullanadi.
  * "Bu odam shu fanga baho qo'yishi mumkinmi?" savoli — scope.ts
@@ -185,16 +185,17 @@ export function cellKey(studentId: string, date: string): string {
 // ------------------------------------------------------------------
 
 /**
- * O'rtacha ball (bir kasrli aniqlikda).
+ * O'rtacha ball — YAGONA MANBA `./scoring` da.
  *
- * Baho umuman bo'lmasa `null` qaytadi — 0 deb ko'rsatish yolg'on bo'lardi
- * ("o'zlashtirish yomon" emas, "hali baho qo'yilmagan").
+ * Ilgari bu funksiya shu faylda VA `ranking.ts` da bayt-bayt bir xil qilib
+ * ikki marta yozilgan edi. Ikki nusxa bir xil bo'lsa ham xavfli: yumaloqlash
+ * qoidasi birida o'zgartirilsa, baholar sahifasi bilan reyting sahifasi
+ * bir xil o'quvchi uchun boshqa o'rtacha ball ko'rsatishi mumkin edi.
+ *
+ * Bu yerda `export ... from` qilinadi, ya'ni `@/lib/grades` dan import
+ * qilayotgan mavjud kod o'zgarmaydi.
  */
-export function averageOf(values: number[]): number | null {
-  if (values.length === 0) return null;
-  const sum = values.reduce((total, value) => total + value, 0);
-  return Math.round((sum / values.length) * 10) / 10;
-}
+export { averageOf } from "./scoring";
 
 /**
  * 100 ballik bahoning daraja nomi (tarjima kaliti).

@@ -2,6 +2,7 @@ import { z } from "zod";
 import { dateField, idField, toNumber } from "./academics";
 import { ATTENDANCE_STATUSES, type AttendanceStatusValue } from "./attendance";
 import { GRADE_MAX, GRADE_MIN, GRADE_TYPES } from "./grades";
+import { denseRank } from "./scoring";
 
 /**
  * KUNLIK JURNAL — VALIDATSIYA VA HISOB-KITOB
@@ -280,61 +281,42 @@ export type RankRow = { id: string; average: number | null };
 /**
  * O'rtacha ball bo'yicha o'rin belgilaydi.
  *
- * Qoidalar:
- *   - Baho umuman yo'q o'quvchi o'rinsiz qoladi (0 deb hisoblash yolg'on
- *     bo'lardi — "yomon o'qiydi" emas, "baho qo'yilmagan").
- *   - Teng ballar TENG o'rin oladi.
- *   - O'rinlar UZILMAYDI: keyingi ball keyingi o'rinni oladi.
+ * Mantiqning o'zi `./scoring` dagi `denseRank` da — ilgari shu yerda
+ * `ranking.ts` dagi `rankByScore` ning deyarli aynan nusxasi turgan edi.
+ * Bu yerda faqat jurnal sahifasi kutgan SHAKL yasaladi: `Map` emas, oddiy
+ * obyekt, va o'rinsiz qolganlar umuman kalit sifatida bo'lmaydi.
  *
- * Misol (egasining talabi):
- *   95, 95, 90, 85  →  1, 1, 2, 3
+ * Qoidalar (`denseRank` da tushuntirilgan):
+ *   - baho umuman yo'q o'quvchi o'rinsiz qoladi;
+ *   - teng ballar TENG o'rin oladi;
+ *   - o'rinlar UZILMAYDI: 95, 95, 90, 85 → 1, 1, 2, 3.
  *
- * Ilgari bu yerda sport turnirlaridagi usul ishlatilgan edi (95, 95, 90 →
- * 1, 1, 3) — ya'ni o'rin sakrab ketardi. Maktab jurnalida esa o'rin "ball
- * darajasi" ma'nosini beradi: nechta bola bir xil ball olganidan qat'i nazar,
- * undan keyingi daraja 2-o'rin bo'ladi.
- *
- * Shuning uchun hisob RAQAM emas, DARAJA bo'yicha yuritiladi: har yangi
- * (kichikroq) o'rtacha ball ko'rinsa daraja bittaga oshadi.
- *
- * `topN` berilsa faqat dastlabki N daraja belgilanadi. Masalan 7 kiritilsa
- * eng yuqori 7 daraja chiqadi, qolganlar bo'sh qoladi — bunda bir darajada
- * bir necha bola bo'lishi mumkin, ya'ni 7 dan ko'p bola belgilanishi normal.
+ * `topN` berilsa faqat dastlabki N DARAJA belgilanadi — bir darajada bir
+ * necha bola bo'lishi mumkin, ya'ni N dan ko'p bola chiqishi normal.
  */
 export function rankByAverage(
   rows: RankRow[],
   topN?: number | null
 ): Record<string, number> {
-  const ranked = rows
-    .filter((row): row is { id: string; average: number } => row.average !== null)
-    .sort((left, right) => right.average - left.average);
+  const ranked = denseRank(
+    rows.map((row) => ({ id: row.id, value: row.average })),
+    topN
+  );
 
   const result: Record<string, number> = {};
-  const limit = topN !== null && topN !== undefined && topN > 0 ? topN : null;
-
-  let place = 0;
-  let previous: number | null = null;
-
-  for (const row of ranked) {
-    // Yangi ball — yangi daraja. Bir xil ball — avvalgi daraja.
-    if (previous === null || row.average < previous) {
-      place += 1;
-      previous = row.average;
-    }
-
-    // Chegaradan oshdi — ro'yxat ball bo'yicha tartiblangani uchun to'xtaymiz.
-    if (limit !== null && place > limit) break;
-
-    result[row.id] = place;
-  }
+  ranked.forEach((place, id) => {
+    result[id] = place;
+  });
 
   return result;
 }
 
-/** "7" → 7, "" yoki axlat → null (searchParams ishonchsiz manba). */
-export function parseTopN(value: unknown): number | null {
-  const parsed = toNumber(value);
-  if (parsed === undefined) return null;
-  if (!Number.isInteger(parsed) || parsed <= 0) return null;
-  return Math.min(parsed, 500);
-}
+/**
+ * "7" → 7, "" yoki axlat → null (searchParams ishonchsiz manba).
+ *
+ * Yagona manba `./scoring`. Ilgari shu yerda alohida nusxa bor edi va u
+ * `ranking.ts` dagi nusxadan FARQ QILARDI: kasr son (`"7.9"`) bu yerda
+ * `null` bo'lib, chegara butunlay olib tashlanardi. Endi ikki sahifa bir xil
+ * qoidaga bo'ysunadi.
+ */
+export { parseTopN } from "./scoring";
