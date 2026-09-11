@@ -1,11 +1,12 @@
 "use client";
 
 import { useFormState, useFormStatus } from "react-dom";
-import { useTranslations } from "next-intl";
+import { useLocale, useTranslations } from "next-intl";
 import { changePassword } from "./actions";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { MIN_PASSWORD_LENGTH, passwordRuleText } from "@/lib/password";
 import type { ActionResult } from "@/lib/safe-action";
 
 function SubmitButton() {
@@ -20,6 +21,7 @@ function SubmitButton() {
 
 export function ChangePasswordForm() {
   const t = useTranslations("changePassword");
+  const locale = useLocale();
   const [state, formAction] = useFormState<ActionResult | undefined, FormData>(
     changePassword,
     undefined
@@ -45,6 +47,9 @@ export function ChangePasswordForm() {
           name="newPassword"
           type="password"
           required
+          // Brauzerdagi tekshiruv faqat QULAYLIK uchun — haqiqiy qaror
+          // serverda (`passwordSchema`) qabul qilinadi.
+          minLength={MIN_PASSWORD_LENGTH}
           autoComplete="new-password"
         />
       </div>
@@ -56,6 +61,7 @@ export function ChangePasswordForm() {
           name="confirmPassword"
           type="password"
           required
+          minLength={MIN_PASSWORD_LENGTH}
           autoComplete="new-password"
         />
       </div>
@@ -64,7 +70,13 @@ export function ChangePasswordForm() {
         <p className="text-sm font-medium text-destructive">{state.error}</p>
       )}
 
-      <p className="text-xs text-muted-foreground">{t("hint")}</p>
+      {/*
+        Qoida matni kodda turadi (`passwordRuleText`), tarjima faylida emas:
+        matn ichida minimal uzunlik raqami bor va u chegara bilan birga
+        avtomatik o'zgarishi kerak. Aks holda forma "8 belgi yetadi" deb
+        yozib turib, server rad etib, foydalanuvchi sababini tushunmaydi.
+      */}
+      <p className="text-xs text-muted-foreground">{passwordRuleText(locale)}</p>
 
       <SubmitButton />
     </form>
