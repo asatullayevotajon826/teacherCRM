@@ -190,6 +190,29 @@ const deleteLessonAction = createAction({
     });
     if (attendanceCount > 0) return { deleted: false, classId: lesson.classId };
 
+    /**
+     * BAHOSI BOR DARS O'CHIRILMAYDI (F3).
+     *
+     * Ilgari `Grade.lessonId` dars o'chirilganda NULL ga tushardi
+     * (`onDelete: SetNull`). Natijada baho "darssiz" qolib,
+     * `@@unique([studentId, lessonId, date, type])` cheklovidan chiqib
+     * ketardi — PostgreSQL da NULL o'zi bilan teng emas. Ya'ni jadvalni
+     * tahrirlash orqali takroriy baho yozish yo'li ochilardi va o'rtacha
+     * ball bilan reyting buzilardi.
+     *
+     * Endi baza darajasida `onDelete: Restrict` turibdi. Bu tekshiruv esa
+     * foydalanuvchi xunuk baza xatosini ko'rmasligi uchun: o'chirish shu
+     * yerda to'xtaydi va jadvalda tushunarli ogohlantirish chiqadi
+     * (davomat bilan bir xil yo'l).
+     *
+     * Baholarni avval jurnaldan olib tashlash kerak — bu ataylab qo'lda
+     * qilinadi: baho o'chirish auditga tushishi shart.
+     */
+    const gradeCount = await db.grade.count({
+      where: { lessonId: input.id },
+    });
+    if (gradeCount > 0) return { deleted: false, classId: lesson.classId };
+
     await db.lesson.delete({ where: { id: input.id } });
     revalidateSchedule(lesson.classId);
     return { deleted: true, classId: lesson.classId };
