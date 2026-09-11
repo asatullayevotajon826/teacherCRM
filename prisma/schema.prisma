@@ -377,19 +377,27 @@ model Grade {
   teacher   Teacher?  @relation(fields: [teacherId], references: [id], onDelete: SetNull)
   teacherId String?
 
-  // QAYSI DARSGA qo'yilgan baho (jurnal ustuni).
+  // QAYSI DARSGA qo'yilgan baho (jurnal ustuni) — MAJBURIY (F3 da `String?`
+  // dan `String` ga o'tkazildi).
   //
-  // Ixtiyoriy (`String?`) — ikki sabab bilan:
-  //   1. Bu maydon qo'shilishidan oldin kiritilgan baholarda u bo'sh qoladi,
-  //      lekin ular yo'qolmasligi kerak.
-  //   2. Dars jadvalidan dars o'chirilsa baho saqlanib qolishi kerak
-  //      (`onDelete: SetNull`) — o'quvchining bahosi jadval tahriri sababli
-  //      yo'qolmasligi lozim.
+  // NEGA O'ZGARTIRILDI: pastdagi `@@unique([studentId, lessonId, date, type])`
+  // cheklovi aynan shu ustunga tayanadi. PostgreSQL da unique cheklovida
+  // NULL o'zi bilan TENG EMAS, shuning uchun `lessonId` bo'sh qatorlar
+  // cheklovga UMUMAN TUSHMASDI — bitta o'quvchiga, bitta kunda, bitta tur
+  // bo'yicha cheksiz baho yozish yo'li ochiq edi. O'rtacha ball va reyting
+  // shu qatorlar ustida hisoblanadi, ya'ni takroriy yozuv natijani buzadi.
   //
-  // Shu maydon tufayli bir kunda bir fandan ikki dars bo'lsa, jurnalda ikki
-  // alohida ustun ("Matematika", "Matematika 2") va ikki alohida baho bo'ladi.
-  lesson   Lesson? @relation(fields: [lessonId], references: [id], onDelete: SetNull)
-  lessonId String?
+  // F3 migratsiyasi eski bo'sh qiymatlarni to'ldiradi (o'quvchi sinfida
+  // o'sha fandan o'sha hafta kunida YAGONA dars topilsa) va agar
+  // aniqlanmagan qator qolsa migratsiya tushunarli xabar bilan to'xtaydi —
+  // baho jimgina o'chirilmaydi.
+  //
+  // `onDelete: Restrict` — bahosi bor darsni o'chirib bo'lmaydi. Ilgari
+  // `SetNull` edi va bu teshikni jadval tahriri orqali QAYTA ochardi.
+  // Foydalanuvchi baza xatosini ko'rmaydi: `schedule/actions.ts` o'chirishni
+  // oldindan to'xtatib, tushunarli xabar chiqaradi (davomat bilan bir xil).
+  lesson   Lesson @relation(fields: [lessonId], references: [id], onDelete: Restrict)
+  lessonId String
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -406,9 +414,8 @@ model Grade {
   // `type` ham kalitga kiradi: bir kunda kundalik ham, nazorat ham baho
   // bo'lishi normal holat — ular bir-birini almashtirmaydi.
   //
-  // ESLATMA: `lessonId` NULL bo'lgan ESKI baholar bu cheklovga tushmaydi —
-  // PostgreSQL da NULL o'zi bilan teng emas, shuning uchun unique ishlamaydi.
-  // Ular uchun `lessonId` ni to'ldirish (backfill) tavsiya etiladi (PR F3).
+  // F3 dan keyin cheklov TO'LIQ ishlaydi: `lessonId` endi NULL bo'lmaydi,
+  // ya'ni chetda qoladigan qator yo'q.
   @@unique([studentId, lessonId, date, type])
   @@index([studentId, quarterId])
   @@index([subjectId, quarterId])
