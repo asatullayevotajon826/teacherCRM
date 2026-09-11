@@ -93,6 +93,13 @@ model AcademicYear {
   name      String    @unique // masalan: "2025-2026"
   startDate DateTime
   endDate   DateTime
+  // FAQAT BITTASI `true` bo'lishi kerak.
+  //
+  // Buni Prisma sxemasida ifodalab bo'lmaydi (qisman unique indeks kerak,
+  // Prisma uni tanimaydi va har `migrate dev` da o'chirmoqchi bo'ladi).
+  // Shuning uchun qoida ILOVA QATLAMIDA, tranzaksiya ichida saqlanadi:
+  // `academic-years/actions.ts` da yangi joriy yil belgilanganda qolganlari
+  // bir so'rovda `false` ga tushiriladi. Migratsiyada esa tozalash bor.
   isCurrent Boolean   @default(false)
   quarters  Quarter[]
   classes   Class[]
@@ -102,7 +109,8 @@ model AcademicYear {
 
 model Quarter {
   id             String       @id @default(cuid())
-  name           Int // 1, 2, 3, 4
+  // 1, 2, 3, 4 — chegara bazada ham CHECK bilan qulflangan (F2 migratsiyasi).
+  name           Int
   startDate      DateTime
   endDate        DateTime
   academicYear   AcademicYear @relation(fields: [academicYearId], references: [id], onDelete: Cascade)
@@ -118,6 +126,9 @@ model Quarter {
 
 model User {
   id                 String   @id @default(cuid())
+  // email VA phone ikkalasi ham NULL bo'lishi MUMKIN EMAS — aks holda
+  // hisobga hech qachon kirib bo'lmaydi (login ikkalasidan biri bilan
+  // ishlaydi). Baza darajasidagi CHECK F2 migratsiyasida qo'shilgan.
   email              String?  @unique
   phone              String?  @unique
   passwordHash       String
@@ -140,6 +151,7 @@ model User {
 
   teacher  Teacher?
   guardian Guardian?
+  student  Student?
 
   auditLogs        AuditLog[]
   issuedPenalties  Penalty[]          @relation("PenaltyIssuedBy")
@@ -190,6 +202,20 @@ model Student {
   guardian   Guardian? @relation(fields: [guardianId], references: [id], onDelete: SetNull)
   guardianId String?
 
+  // O'QUVCHINING O'Z HISOBI (ixtiyoriy).
+  //
+  // TZ da o'quvchi ham tizimga kiradi (o'z bahosi, reytingi, testlari).
+  // Ilgari `Student` va `User` o'rtasida umuman bog'lanish yo'q edi:
+  // ya'ni "kirgan odam qaysi o'quvchi?" degan savolga javob yo'q edi va
+  // kod majburan ism-familiya bo'yicha taxmin qilishga majbur bo'lardi —
+  // bu esa bir xil ismli ikki o'quvchida BOSHQA BOLANING ma'lumotini
+  // ko'rsatib qo'yish xavfi.
+  //
+  // `@unique` — bitta hisob faqat bitta o'quvchiga tegishli.
+  // `onDelete: SetNull` — hisob o'chirilsa o'quvchi kartochkasi qoladi.
+  user   User?   @relation(fields: [userId], references: [id], onDelete: SetNull)
+  userId String? @unique
+
   attendances Attendance[]
   grades      Grade[]
   penalties   Penalty[]
@@ -204,12 +230,22 @@ model Student {
 }
 
 model Class {
-  id                String        @id @default(cuid())
+  id                String       @id @default(cuid())
   name              String
+  // 1–11 — chegara bazada ham CHECK bilan qulflangan (F2 migratsiyasi).
   grade             Int
-  academicYear      AcademicYear? @relation(fields: [academicYearId], references: [id], onDelete: SetNull)
-  academicYearId    String?
-  homeroomTeacher   Teacher?      @relation("HomeroomTeacher", fields: [homeroomTeacherId], references: [id], onDelete: SetNull)
+  // O'QUV YILI MAJBURIY (F2 da `String?` dan `String` ga o'tkazildi).
+  //
+  // Sabab: pastdagi `@@unique([name, academicYearId])` PostgreSQL da NULL
+  // qiymatda ISHLAMAYDI (NULL o'zi bilan teng emas). Ya'ni o'quv yilisiz
+  // "9-A" nomli sinfni cheksiz marta yaratish mumkin edi — jurnal, davomat
+  // va reyting qaysi "9-A" ekanini ajrata olmay qolardi.
+  //
+  // `onDelete: Restrict` — sinfi bor o'quv yili o'chirilmaydi (ilgari
+  // `SetNull` edi: yil o'chsa sinflar "yetim" bo'lib qolardi).
+  academicYear      AcademicYear @relation(fields: [academicYearId], references: [id], onDelete: Restrict)
+  academicYearId    String
+  homeroomTeacher   Teacher?     @relation("HomeroomTeacher", fields: [homeroomTeacherId], references: [id], onDelete: SetNull)
   homeroomTeacherId String?
 
   students Student[]
@@ -250,15 +286,26 @@ model LessonPeriod {
 }
 
 model Lesson {
-  id        String        @id @default(cuid())
-  class     Class         @relation(fields: [classId], references: [id], onDelete: Cascade)
+  id        String       @id @default(cuid())
+  class     Class        @relation(fields: [classId], references: [id], onDelete: Cascade)
   classId   String
-  subject   Subject       @relation(fields: [subjectId], references: [id], onDelete: Cascade)
+  subject   Subject      @relation(fields: [subjectId], references: [id], onDelete: Cascade)
   subjectId String
-  teacher   Teacher       @relation(fields: [teacherId], references: [id], onDelete: Cascade)
+  teacher   Teacher      @relation(fields: [teacherId], references: [id], onDelete: Cascade)
   teacherId String
-  period    LessonPeriod? @relation(fields: [periodId], references: [id], onDelete: SetNull)
-  periodId  String?
+  // QO'NG'IROQ UYASI MAJBURIY (F2 da `String?` dan `String` ga o'tkazildi).
+  //
+  // Pastdagi ikkala `@@unique` ham `periodId` ga tayanadi. NULL bo'lsa ular
+  // ishlamas edi: bitta sinfga (yoki bitta o'qituvchiga) bir kunda cheksiz
+  // "uyasiz" dars yozish mumkin bo'lardi va jadval ziddiyati aniqlanmasdi.
+  //
+  // Kod allaqachon uyani majburiy talab qiladi (`lessons.ts` -> `idField`),
+  // ya'ni bu o'zgarish sxemani kodga MOSLASHTIRADI.
+  //
+  // `onDelete: Restrict` — darsi bor qo'ng'iroq uyasi o'chirilmaydi.
+  period    LessonPeriod @relation(fields: [periodId], references: [id], onDelete: Restrict)
+  periodId  String
+  // 1–6 (dushanba–shanba) — bazada ham CHECK bilan qulflangan.
   dayOfWeek Int
   startTime String
   endTime   String
@@ -311,6 +358,7 @@ model Grade {
   subjectId String
   quarter   Quarter   @relation(fields: [quarterId], references: [id], onDelete: Cascade)
   quarterId String
+  // 0–100 — chegara bazada ham CHECK bilan qulflangan (F2 migratsiyasi).
   value     Int
   type      GradeType @default(DAILY)
 
@@ -360,7 +408,7 @@ model Grade {
   //
   // ESLATMA: `lessonId` NULL bo'lgan ESKI baholar bu cheklovga tushmaydi —
   // PostgreSQL da NULL o'zi bilan teng emas, shuning uchun unique ishlamaydi.
-  // Ular uchun `lessonId` ni to'ldirish (backfill) tavsiya etiladi.
+  // Ular uchun `lessonId` ni to'ldirish (backfill) tavsiya etiladi (PR F3).
   @@unique([studentId, lessonId, date, type])
   @@index([studentId, quarterId])
   @@index([subjectId, quarterId])
@@ -378,6 +426,7 @@ model PenaltyCriterion {
   id          String    @id @default(cuid())
   name        String
   description String?
+  // Manfiy bo'lmasligi kerak — bazada CHECK bilan qulflangan.
   points      Int
   category    String?
   isActive    Boolean   @default(true)
@@ -393,6 +442,7 @@ model Penalty {
   studentId   String
   criterion   PenaltyCriterion? @relation(fields: [criterionId], references: [id], onDelete: SetNull)
   criterionId String?
+  // Manfiy bo'lmasligi kerak — aks holda "jarima" reytingni OSHIRIB yuboradi.
   points      Int
   note        String?
   issuedBy    User?             @relation("PenaltyIssuedBy", fields: [issuedById], references: [id], onDelete: SetNull)
@@ -416,8 +466,11 @@ model Penalty {
 // raqamni ko'rishi kerak. URL da bo'lsa har kim o'z linkida boshqa
 // koeffitsient yozib, boshqa reyting ko'rsatishi mumkin bo'lardi.
 //
-// `id` doim "global" — jadvalda faqat bitta qator bo'ladi. Shu tufayli
-// `upsert` bilan yangilanadi va "qaysi sozlama to'g'ri?" savoli tug'ilmaydi.
+// `id` doim "global" — jadvalda faqat bitta qator bo'ladi. Bu ILGARI faqat
+// kelishuv edi: `@default("global")` boshqa id bilan qator yozishga xalaqit
+// bermasdi, ikkinchi qator paydo bo'lsa esa reyting qaysi koeffitsientda
+// hisoblangani NOANIQ bo'lib qolardi. Endi baza darajasida CHECK bor:
+// `id = 'global'` (F2 migratsiyasi) — ikkinchi qator YOZILMAYDI.
 //
 // Koeffitsientlar BUTUN SON sifatida saqlanadi (foiz yoki yuzdan bir),
 // chunki suzuvchi nuqtali son (Float) yig'indida kichik xatolar beradi va
@@ -454,6 +507,10 @@ model Contract {
   studentId     String       @unique
   monthlyAmount Int
   discountType  DiscountType @default(PERCENT)
+  // CHEGIRMA CHEGARASI (F2 migratsiyasida CHECK):
+  //   - manfiy bo'lolmaydi;
+  //   - PERCENT bo'lsa 100 dan oshmaydi (aks holda hisob-kitob MANFIY
+  //     summa beradi va "to'langan" holatiga o'tib ketadi).
   discountValue Int          @default(0)
   startDate     DateTime
   endDate       DateTime?
@@ -481,6 +538,8 @@ model Payment {
   id           String        @id @default(cuid())
   invoice      Invoice       @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
   invoiceId    String
+  // Musbat bo'lishi shart — bazada CHECK bilan qulflangan. Manfiy "to'lov"
+  // qarzni o'chirish yo'li bo'lib qolardi va kassa hisobi buzilardi.
   amount       Int
   method       PaymentMethod @default(CASH)
   date         DateTime      @default(now())
@@ -535,6 +594,8 @@ model TestResult {
   testId      String
   student     Student  @relation(fields: [studentId], references: [id], onDelete: Cascade)
   studentId   String
+  // score >= 0, percent 0–100 — bazada CHECK bilan qulflangan. Reyting shu
+  // foizga tayanadi: 900% natija butun reytingni buzib yuborardi.
   score       Int
   percent     Float
   durationSec Int?
