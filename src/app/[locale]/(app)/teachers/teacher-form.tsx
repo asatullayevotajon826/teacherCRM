@@ -1,10 +1,11 @@
 "use client";
 
 import { useFormState, useFormStatus } from "react-dom";
-import { useTranslations } from "next-intl";
+import { useLocale, useTranslations } from "next-intl";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { MIN_PASSWORD_LENGTH, passwordRuleText } from "@/lib/password";
 import {
   createTeacher,
   updateTeacher,
@@ -42,6 +43,7 @@ const selectClass =
 
 export function TeacherForm({ mode, subjects, teacher }: TeacherFormProps) {
   const t = useTranslations("teachers");
+  const locale = useLocale();
   const action = mode === "create" ? createTeacher : updateTeacher;
   const [state, formAction] = useFormState<TeacherFormState, FormData>(
     action,
@@ -121,8 +123,22 @@ export function TeacherForm({ mode, subjects, teacher }: TeacherFormProps) {
       {mode === "create" ? (
         <div className="space-y-2">
           <Label htmlFor="password">{t("password")}</Label>
-          <Input id="password" name="password" type="text" required />
-          <p className="text-xs text-muted-foreground">{t("passwordHint")}</p>
+          <Input
+            id="password"
+            name="password"
+            type="text"
+            required
+            // Serverdagi `passwordSchema` bilan bir xil chegara — admin
+            // formani to'ldirayotib qoidani darhol ko'rsin.
+            minLength={MIN_PASSWORD_LENGTH}
+          />
+          {/*
+            Qoida matni kodda (`passwordRuleText`): ichida minimal uzunlik
+            raqami bor, u chegara bilan birga avtomatik o'zgarishi kerak.
+          */}
+          <p className="text-xs text-muted-foreground">
+            {passwordRuleText(locale)}
+          </p>
         </div>
       ) : (
         <p className="text-xs text-muted-foreground">{t("passwordEditHint")}</p>
