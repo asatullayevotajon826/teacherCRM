@@ -1,4 +1,5 @@
 import { db } from "./db";
+import { passwordSchema } from "./password";
 
 /**
  * IMPORT COMMIT QADAMI — QAYTA TEKSHIRUV
@@ -65,11 +66,28 @@ export function normalizeCommitPhone(value?: string | null): string | null {
 }
 
 /**
- * Boshlang'ich parol siyosati — `preview` dagi qoidaning aynan o'zi:
- * kamida 8 belgi, harf va raqam bor.
+ * Boshlang'ich parol siyosati.
+ *
+ * TUZATILGAN NUQSON (G2a): bu funksiya parol qoidasini O'ZI takrorlab
+ * yozgan edi — `value.length >= 8 && harf && raqam`. Natijada tizimda
+ * ikki xil siyosat yashab turdi:
+ *
+ *   - forma orqali hisob yaratilsa `passwordSchema` (12 belgi, lug'at va
+ *     naqsh tekshiruvi bilan) ishlardi;
+ *   - Excel import orqali hisob yaratilsa SHU YERDAGI bo'sh qoida
+ *     ishlardi, ya'ni `Maktab12` yoki `admin123` kabi parol bilan
+ *     o'qituvchi hisobi bemalol yaratilardi.
+ *
+ * Import — aynan ommaviy yo'l: bitta fayl bilan o'nlab hisob ochiladi.
+ * Shuning uchun eng zaif parollar aynan shu yo'ldan kirib kelardi.
+ *
+ * Endi qoida bitta manbadan olinadi: `passwordSchema`. Ya'ni siyosat
+ * o'zgarsa (masalan chegara 12 dan 14 ga chiqsa) import ham avtomatik
+ * ergashadi — qoidani ikkinchi joyda yangilash esdan chiqishi mumkin emas,
+ * chunki ikkinchi joy endi yo'q.
  */
 export function isStrongInitialPassword(value: string): boolean {
-  return value.length >= 8 && /[A-Za-z]/.test(value) && /\d/.test(value);
+  return passwordSchema.safeParse(value).success;
 }
 
 /** Berilgan id'lardan bazada HAQIQATDA mavjud bo'lganlarini qaytaradi. */
