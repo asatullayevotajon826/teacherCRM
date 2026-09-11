@@ -154,6 +154,12 @@ export function mapClassRow(
  *
  * Endi chegara `GRADES` ning o'zidan olinadi — ro'yxat o'zgarsa ikki joyni
  * qo'lda moslashtirish kerak bo'lmaydi.
+ *
+ * O'QUV YILI MAJBURIY (PR F2): ilgari `nullable().optional()` edi va
+ * `commit` bosqichi `academicYearId: null` bilan sinf yaratardi. Bunday
+ * sinf sxemadagi @@unique([name, academicYearId]) qoidasidan CHETDA qolardi
+ * (NULL o'zi bilan teng emas) — ya'ni import har safar ishga tushganda
+ * bir xil nomli yangi "9-A" qo'shilaverardi. Endi baza ustuni ham NOT NULL.
  */
 const classCommitRowSchema = z.object({
   rowNumber: z.number().int().nonnegative(),
@@ -164,7 +170,7 @@ const classCommitRowSchema = z.object({
     .refine((value) => GRADE_VALUES.includes(value), {
       message: "Parallel ruxsat etilgan ro'yxatda yo'q.",
     }),
-  academicYearId: z.string().min(1).nullable().optional(),
+  academicYearId: z.string().min(1),
   homeroomTeacherId: z.string().min(1).nullable().optional(),
   existingId: z.string().min(1).nullable().optional(),
 });

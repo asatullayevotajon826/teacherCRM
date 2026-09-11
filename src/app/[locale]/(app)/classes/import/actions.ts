@@ -47,6 +47,11 @@ import {
  * bo'lsa ham), ya'ni qo'lda yasalgan so'rov sinfni istalgan o'quv yiliga
  * yoki istalgan o'qituvchiga bog'lab qo'yishi mumkin edi. Endi har bir id
  * yozishdan oldin bazada mavjudligi bilan solishtiriladi.
+ *
+ * O'QUV YILI MAJBURIY (PR F2): ilgari joriy o'quv yili belgilanmagan bo'lsa
+ * import sinfni YILSIZ yaratardi (faqat ogohlantirish yozib). Bunday sinf
+ * takrorlanishga qarshi cheklovdan chetda qolardi. Endi bunday qator
+ * "xato" deb belgilanadi va umuman yozilmaydi.
  */
 
 export type ClassPreviewState =
@@ -58,7 +63,7 @@ export type ClassCommitState =
   | { ok: false; error: string };
 
 /** Sinf kaliti: nom + o'quv yili. */
-function classKey(name: string, academicYearId?: string | null) {
+function classKey(name: string, academicYearId: string | null) {
   return `${normalizeKey(name)}|${academicYearId ?? ""}`;
 }
 
@@ -171,7 +176,8 @@ export async function previewClassImport(
     const label = data.name;
 
     // O'quv yili: yozilgan bo'lsa aniq topilishi shart, aks holda joriy yil.
-    let academicYearId: string | null = currentYearId;
+    // Ikkalasi ham bo'lmasa — qator YOZILMAYDI (PR F2).
+    let academicYearId: string;
     if (data.academicYearName) {
       const found = yearMap.get(normalizeKey(data.academicYearName));
       if (!found) {
@@ -190,8 +196,20 @@ export async function previewClassImport(
       }
       academicYearId = found;
     } else if (currentYearId === null) {
-      messages.push("Joriy o'quv yili belgilanmagan — sinf o'quv yilisiz yaratiladi.");
+      return {
+        rowNumber: sheetRow.rowNumber,
+        status: "error" as const,
+        label,
+        detail: "",
+        messages: [
+          ...messages,
+          "O'quv yili ustuni bo'sh va joriy o'quv yili belgilanmagan. \"O'quv yillari\" bo'limida joriy yilni belgilang yoki ustunni to'ldiring.",
+        ],
+        row: null,
+        existingId: null,
+      };
     } else {
+      academicYearId = currentYearId;
       messages.push("O'quv yili ustuni bo'sh — joriy o'quv yili olinadi.");
     }
 
@@ -220,7 +238,7 @@ export async function previewClassImport(
     const existingId = existingMap.get(key) ?? null;
 
     const yearLabel =
-      years.find((year) => year.id === academicYearId)?.name ?? "o'quv yilisiz";
+      years.find((year) => year.id === academicYearId)?.name ?? "—";
     const detail = [`${data.grade}-parallel`, yearLabel, data.homeroomTeacher ?? ""]
       .filter((part) => part !== "")
       .join(" · ");
@@ -326,7 +344,9 @@ const commitAction = createAction({
       }
 
       // Begona yoki o'chirilgan id — qator butunlay tashlanadi.
-      if (row.academicYearId && !validYears.has(row.academicYearId)) {
+      // O'quv yili endi MAJBURIY, shuning uchun shart `row.academicYearId &&`
+      // bilan boshlanmaydi: id har doim bo'lishi va mavjud bo'lishi kerak.
+      if (!validYears.has(row.academicYearId)) {
         outcome.failed += 1;
         addMessage(`${row.rowNumber}-qator: o'quv yili topilmadi (ma'lumot eskirgan bo'lishi mumkin).`);
         continue;
@@ -349,7 +369,7 @@ const commitAction = createAction({
             data: {
               name: row.name,
               grade: row.grade,
-              academicYearId: row.academicYearId ?? null,
+              academicYearId: row.academicYearId,
               homeroomTeacherId: row.homeroomTeacherId ?? null,
             },
           });
@@ -359,7 +379,7 @@ const commitAction = createAction({
             data: {
               name: row.name,
               grade: row.grade,
-              academicYearId: row.academicYearId ?? null,
+              academicYearId: row.academicYearId,
               homeroomTeacherId: row.homeroomTeacherId ?? null,
             },
             select: { id: true },
