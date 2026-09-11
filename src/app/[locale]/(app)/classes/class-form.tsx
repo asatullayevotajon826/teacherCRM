@@ -26,11 +26,17 @@ type ClassFormProps = {
   };
 };
 
-function SubmitButton({ mode }: { mode: "create" | "edit" }) {
+function SubmitButton({
+  mode,
+  disabled,
+}: {
+  mode: "create" | "edit";
+  disabled?: boolean;
+}) {
   const { pending } = useFormStatus();
   const t = useTranslations("classes");
   return (
-    <Button type="submit" disabled={pending}>
+    <Button type="submit" disabled={pending || disabled}>
       {pending ? t("saving") : mode === "create" ? t("create") : t("save")}
     </Button>
   );
@@ -50,6 +56,19 @@ export function ClassForm({
 
   // Redirectdan keyin state undefined bo'lishi mumkin.
   const errorMessage = state?.error;
+
+  /*
+   * O'QUV YILI MAJBURIY (PR F2).
+   *
+   * Ilgari ro'yxatda "tanlanmagan" varianti bor edi va sinf o'quv yilisiz
+   * saqlanardi. Bu holda sxemadagi @@unique([name, academicYearId]) qoidasi
+   * ishlamay qolardi (NULL o'zi bilan teng emas) — bir xil nomli sinflar
+   * takrorlanib ketardi. Endi bo'sh variant yo'q; bazada ham NOT NULL.
+   *
+   * Bazada birorta o'quv yili bo'lmasa forma saqlanmaydi — shuning uchun
+   * tugma o'chiriladi va foydalanuvchi avval yil yaratishga yo'naltiriladi.
+   */
+  const noYears = academicYears.length === 0;
 
   return (
     <form action={formAction} className="space-y-4">
@@ -92,12 +111,17 @@ export function ClassForm({
           <select
             id="academicYearId"
             name="academicYearId"
+            required
             defaultValue={
               klass?.academicYearId ?? defaultAcademicYearId ?? ""
             }
             className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
           >
-            <option value="">{t("academicYearNone")}</option>
+            {/* Bo'sh variant faqat "hali tanlanmagan" holatini ko'rsatadi va
+                yuborib bo'lmaydi (disabled + required). */}
+            <option value="" disabled>
+              —
+            </option>
             {academicYears.map((year) => (
               <option key={year.id} value={year.id}>
                 {year.label}
@@ -106,8 +130,8 @@ export function ClassForm({
           </select>
           {/* Ro'yxatda faqat bazadagi o'quv yillari bo'ladi — yangi yilni
               shu havola orqali qo'shish mumkin. */}
-          {academicYears.length === 0 ? (
-            <p className="text-xs text-muted-foreground">{tYears("empty")}</p>
+          {noYears ? (
+            <p className="text-xs text-destructive">{tYears("empty")}</p>
           ) : null}
           <Link
             href="/academic-years"
@@ -139,7 +163,7 @@ export function ClassForm({
       ) : null}
 
       <div className="flex gap-2">
-        <SubmitButton mode={mode} />
+        <SubmitButton mode={mode} disabled={noYears} />
         <Button asChild variant="outline">
           <Link href={klass ? `/classes/${klass.id}` : "/classes"}>
             {t("cancel")}
