@@ -28,10 +28,22 @@ const createClassAction = createAction({
   roles: ["ADMIN"],
   schema: classWriteSchema,
   handler: async (input): Promise<SaveResult> => {
+    // O'quv yili endi MAJBURIY (PR F2) — `?? null` olib tashlandi.
+    // Begona yoki o'chirilgan id kelib qolmasligi uchun mavjudligini
+    // yozishdan oldin tekshiramiz: aks holda baza xatosi (P2003) ko'rinar,
+    // foydalanuvchi esa nima bo'lganini tushunmasdi.
+    const year = await db.academicYear.findUnique({
+      where: { id: input.academicYearId },
+      select: { id: true },
+    });
+    if (!year) {
+      return { ok: false, message: "O'quv yili topilmadi. Sahifani yangilang." };
+    }
+
     const duplicate = await db.class.findFirst({
       where: {
         name: input.name,
-        academicYearId: input.academicYearId ?? null,
+        academicYearId: input.academicYearId,
       },
       select: { id: true },
     });
@@ -41,7 +53,7 @@ const createClassAction = createAction({
       data: {
         name: input.name,
         grade: input.grade,
-        academicYearId: input.academicYearId ?? null,
+        academicYearId: input.academicYearId,
         homeroomTeacherId: input.homeroomTeacherId ?? null,
       },
       select: { id: true },
@@ -61,10 +73,18 @@ const updateClassAction = createAction({
   roles: ["ADMIN"],
   schema: classUpdateSchema,
   handler: async (input): Promise<SaveResult> => {
+    const year = await db.academicYear.findUnique({
+      where: { id: input.academicYearId },
+      select: { id: true },
+    });
+    if (!year) {
+      return { ok: false, message: "O'quv yili topilmadi. Sahifani yangilang." };
+    }
+
     const duplicate = await db.class.findFirst({
       where: {
         name: input.name,
-        academicYearId: input.academicYearId ?? null,
+        academicYearId: input.academicYearId,
         id: { not: input.id },
       },
       select: { id: true },
@@ -76,7 +96,7 @@ const updateClassAction = createAction({
       data: {
         name: input.name,
         grade: input.grade,
-        academicYearId: input.academicYearId ?? null,
+        academicYearId: input.academicYearId,
         homeroomTeacherId: input.homeroomTeacherId ?? null,
       },
     });

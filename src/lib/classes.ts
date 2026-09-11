@@ -26,7 +26,20 @@ const classBase = z.object({
   // "9-A", "5-B" ko'rinishidagi qisqa nom.
   name: nameField,
   grade: z.preprocess(toNumber, z.number().int().min(1).max(11)),
-  academicYearId: optionalIdField,
+  /*
+   * O'QUV YILI MAJBURIY (PR F2).
+   *
+   * Ilgari `optionalIdField` edi va bu jimgina teshik ochib turardi:
+   * sxemadagi `@@unique([name, academicYearId])` PostgreSQL da NULL
+   * qiymatda ISHLAMAYDI (NULL o'zi bilan teng emas). Ya'ni o'quv yili
+   * tanlanmasa, bir xil "9-A" nomli sinfni cheksiz marta yaratish mumkin
+   * edi — keyin jurnal, davomat va reyting qaysi "9-A" ekanini ajrata
+   * olmay qolardi.
+   *
+   * Endi baza ustuni ham NOT NULL, shuning uchun bu yerda ham majburiy:
+   * xato baza xatosi sifatida emas, tushunarli forma xatosi bo'lib chiqadi.
+   */
+  academicYearId: idField,
   homeroomTeacherId: optionalIdField,
 });
 
