@@ -55,6 +55,45 @@ yarn-error.log*
 login-parollar*.csv
 /*.csv
 
+# ------------------------------------------------------------------
+# BAZA ZAXIRALARI — ENG MAXFIY FAYL
+#
+# `pg_dump` chiqishi ichida BUTUN baza bo'ladi: har bir o'quvchining
+# ismi, tug'ilgan sanasi, manzili, ota-onasining telefon raqami,
+# foydalanuvchilarning parol hash'lari va butun audit jurnali.
+# Bu — loyihadagi eng maxfiy fayl, `.env` dan ham og'irroq: `.env`
+# sirni beradi, zaxira esa mijoz ma'lumotining O'ZINI beradi.
+#
+# Repo OCHIQ (public). Bunday fayl bir marta push qilinsa, keyin
+# o'chirilsa ham Git TARIXIDA abadiy qoladi va uni faqat butun
+# tarixni qayta yozish bilan olib tashlash mumkin.
+#
+# To'g'ri odat: zaxirani loyiha papkasidan TASHQARIGA olish, masalan:
+#   pg_dump -U postgres -d teacher_crm -F c -f D:\schoolCRM\zaxira.dump
+# Lekin papkani adashtirish juda oson (`-f zaxira.dump` deb yozilsa
+# fayl joriy papkaga tushadi), shuning uchun bu qatorlar oxirgi
+# qalqon sifatida turadi.
+# ------------------------------------------------------------------
+*.dump
+*.backup
+*.bak
+*.tar
+*.tar.gz
+*.sql
+
+# DIQQAT — yuqoridagi `*.sql` uchun MAJBURIY istisno.
+#
+# Prisma migratsiyalari `prisma/migrations/<vaqt>_<nom>/migration.sql`
+# ko'rinishida saqlanadi va ular ALBATTA repoda bo'lishi shart:
+# CI dagi `prisma migrate deploy` aynan shu fayllarni o'qiydi.
+#
+# Istisnosiz `*.sql` yangi migratsiyani JIMGINA commitdan tashqarida
+# qoldirardi — xato hech qayerda ko'rinmasdi, faqat CI yiqilganda yoki
+# boshqa dasturchining bazasi eskirib qolganda bilinardi. Eski
+# migratsiyalar Git tomonidan allaqachon kuzatilayotgani uchun
+# ta'sirlanmasdi, ya'ni muammo faqat KEYINGI migratsiyada chiqardi.
+!prisma/migrations/**/*.sql
+
 # Kalit va sertifikat fayllari
 *.pem
 *.key
