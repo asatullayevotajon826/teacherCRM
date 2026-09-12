@@ -20,20 +20,13 @@
  * Endi hisob PostgreSQL da (`rate-limit-db.ts`): server qayta ishga
  * tushsa ham, bir necha instansiya bo'lsa ham chegara BITTA va davomli.
  *
- * LOGIN KALITI XESHLANADI (maxfiylik)
- * -----------------------------------
- * Kalit endi bazada saqlanadi, shuning uchun unga ochiq email yoki
- * telefon YOZILMAYDI: u SHA-256 bilan xeshlanadi. Aks holda `RateHit`
- * jadvali "tizimga kirishga urinilgan email va telefonlar ro'yxati"ga
- * aylanardi — ya'ni cheklovning o'zi yangi ma'lumot sizish yo'lini
- * yaratardi. Xesh bir tomonlama: taqqoslash uchun yetadi, o'qish uchun
- * yaramaydi.
- *
- * Xeshga maxfiy "tuz" qo'shilmadi: bu maxfiylikni bir pog'ona oshirardi,
- * lekin `AUTH_SECRET` ni shu qatlamga bog'lab qo'yardi (uni almashtirish
- * barcha hisoblagichni yo'qotardi). Bu jadvaldagi qatorlar bir soatdan
- * kam yashaydi, shuning uchun xesh yetarli deb hisoblandi — bu ongli
- * qaror, hujjatda ochiq yozildi.
+ * KALITLAR (PR G4c da ajratildi)
+ * ------------------------------
+ * Kalit yasash `rate-limit-keys.ts` da — u bazaga bog'liq emas va
+ * `tests/lib/rate-limit.test.ts` bilan qulflangan. Eng muhimi: login
+ * (email/telefon) kalitga OCHIQ tushmaydi, SHA-256 bilan xeshlanadi.
+ * Sababi — kalit bazada saqlanadi, ochiq qoldirilsa `RateHit` jadvali
+ * "kirishga urinilgan email va telefonlar ro'yxati"ga aylanardi.
  *
  * NOSOZLIKDA YOPILADI (fail-closed)
  * ---------------------------------
@@ -43,32 +36,17 @@
  * baza javob bermayotganda parolni tekshirishning o'zi ham mumkin emas.
  */
 
-import { createHash } from "node:crypto";
 import { countRecentDb, recordDb, resetDbKey } from "./rate-limit-db";
+import { ipKeyFor, loginKeyFor } from "./rate-limit-keys";
 
 const WINDOW_MS = 15 * 60 * 1000;
 const LOGIN_MAX_ATTEMPTS = 5;
 const IP_MAX_ATTEMPTS = 20;
 
-function normalizeLogin(login: string): string {
-  return login.trim().toLowerCase();
-}
-
-/**
- * Login identifikatorini bir tomonlama xeshga aylantiradi.
- * 32 belgi — to'qnashuv ehtimoli amalda nol, lekin kalit qisqa qoladi.
- */
-function hashLogin(login: string): string {
-  return createHash("sha256")
-    .update(normalizeLogin(login))
-    .digest("hex")
-    .slice(0, 32);
-}
-
 export function loginAttemptKeys(login: string, ip: string) {
   return {
-    loginKey: `login:${hashLogin(login)}`,
-    ipKey: `ip:${ip || "unknown"}`,
+    loginKey: loginKeyFor(login),
+    ipKey: ipKeyFor(ip),
   };
 }
 
