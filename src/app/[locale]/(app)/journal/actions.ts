@@ -4,6 +4,7 @@ import { revalidatePath } from "next/cache";
 import { db } from "@/lib/db";
 import { createAction, formDataToObject } from "@/lib/safe-action";
 import { logAudit } from "@/lib/audit";
+import { logError } from "@/lib/logger";
 import { redirectNever } from "@/lib/auth-guard";
 import { gradingLessonScope } from "@/lib/scope";
 import { toDate, type SaveResult } from "@/lib/academics";
@@ -31,6 +32,13 @@ import { queueAbsenceNotices } from "@/lib/absence-notice";
  * umuman ishonmaydi — o'zi `gradingLessonScope` bilan qidiradi va begona
  * darsga kelgan katakchani JIMGINA tashlab yuboradi (xato xabari hujumchiga
  * qaysi dars mavjudligini bildirmasligi kerak).
+ *
+ * TASHLANGAN KATAKCHALAR QAYD ETILADI (PR G3c): jimgina tashlash — to'g'ri
+ * qaror, lekin ilgari bu urinish SERVERDA HAM iz qoldirmasdi. Ya'ni kimdir
+ * boshqa sinfning bahosini o'zgartirishga urinsa, tizim to'g'ri to'sardi,
+ * ammo bu urinish normal ishlashdan farq qilmasdi. Endi tashlangan
+ * katakchalarning SONI log'ga va audit jurnaliga tushadi — id'lar
+ * yozilmaydi, foydalanuvchi ko'radigan javob esa o'zgarmadi.
  *
  * 5-QADAM — TUZATILGAN NUQSON. Ilgari chorak `where: academicYearId ? {...} : {}`
  * bilan qidirilardi. `Class.academicYearId` ixtiyoriy maydon (`onDelete: SetNull`),
@@ -123,6 +131,37 @@ const saveJournalAction = createAction({
     const attendanceEntries = input.attendance.filter((entry) =>
       allowedStudents.has(entry.studentId)
     );
+
+    /**
+     * Doiradan tashqari katakchalar soni (IDOR sinovining izi).
+     *
+     * MAXFIYLIK: faqat SON yoziladi. `studentId`/`lessonId` log'ga
+     * tushirilsa, log'ning o'zi "qaysi id mavjud" degan savolga javob
+     * beradigan manbaga aylanardi.
+     *
+     * Normal ishlashda bu son har doim 0 bo'ladi — chunki interfeys
+     * faqat ochiq katakchalarni yuboradi. Noldan farqli qiymat
+     * so'rov QO'LDA yasalganini ko'rsatadi.
+     */
+    const droppedGrades = input.grades.length - gradeEntries.length;
+    const droppedAttendance =
+      input.attendance.length - attendanceEntries.length;
+
+    if (droppedGrades > 0 || droppedAttendance > 0) {
+      logError(
+        "journal:save",
+        new Error("doiradan tashqari katakchalar tashlab yuborildi"),
+        {
+          stage: "scope",
+          userId: user.id,
+          classId: input.classId,
+          sentGrades: input.grades.length,
+          droppedGrades,
+          sentAttendance: input.attendance.length,
+          droppedAttendance,
+        }
+      );
+    }
 
     if (gradeEntries.length === 0 && attendanceEntries.length === 0) {
       return { ok: false, message: "Saqlash uchun ma'lumot kiritilmadi." };
@@ -458,6 +497,9 @@ const saveJournalAction = createAction({
         updated: gradeUpdates.length,
         deleted: gradeIdsToDelete.length,
         attendanceChanged,
+        // Doiradan tashqari katakchalar — faqat son (PR G3c).
+        droppedGrades,
+        droppedAttendance,
         changes: gradeChanges.slice(0, AUDIT_CHANGE_LIMIT),
         truncated: gradeChanges.length > AUDIT_CHANGE_LIMIT,
       },
