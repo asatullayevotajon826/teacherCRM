@@ -20,6 +20,11 @@ import {
  * Middleware bu faylni ISHLATMAYDI — u `auth.config.ts` dan foydalanadi,
  * chunki edge runtime'da Prisma va bcrypt ishlamaydi. Tafsilotlar shu
  * fayl izohida.
+ *
+ * ESLATMA (PR G4b): login cheklovi funksiyalari endi bazaga murojaat
+ * qiladi, ya'ni asinxron. Ular ATAYLAB `await` bilan chaqiriladi —
+ * `await` tushib qolsa hisob yozilmasdan qolib, parol sinashga qarshi
+ * himoya jimgina ishlamay qolardi.
  */
 
 // Login formasi validatsiyasi
@@ -113,7 +118,7 @@ export const {
 
         const { login, password } = parsed.data;
 
-        if (isLoginRateLimited(login, ip)) {
+        if (await isLoginRateLimited(login, ip)) {
           await logAudit({
             action: "LOGIN_FAILED",
             entity: "User",
@@ -135,7 +140,7 @@ export const {
           // Vaqtni tenglashtirish uchun — natijasi ataylab ishlatilmaydi.
           await bcrypt.compare(password, await getDummyHash());
 
-          recordLoginFailure(login, ip);
+          await recordLoginFailure(login, ip);
           await logAudit({
             action: "LOGIN_FAILED",
             entity: "User",
@@ -146,7 +151,7 @@ export const {
 
         const passwordOk = await bcrypt.compare(password, user.passwordHash);
         if (!passwordOk) {
-          recordLoginFailure(login, ip);
+          await recordLoginFailure(login, ip);
           await logAudit({
             userId: user.id,
             action: "LOGIN_FAILED",
@@ -157,7 +162,7 @@ export const {
           return null;
         }
 
-        clearLoginFailures(login);
+        await clearLoginFailures(login);
 
         return {
           id: user.id,
