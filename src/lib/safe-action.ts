@@ -2,6 +2,7 @@ import { Prisma, type Role } from "@prisma/client";
 import { z } from "zod";
 import { requireAuth, requireRole, type SessionUser } from "./auth-guard";
 import { logAudit, type AuditAction } from "./audit";
+import { logError } from "./logger";
 import { consume } from "./rate-limit-core";
 import { getRequestIp } from "./rate-limit";
 
@@ -13,14 +14,36 @@ import { getRequestIp } from "./rate-limit";
  * unga istalgan ma'lumot yuborilishi mumkin. Formadagi `<select>` da 3 ta
  * variant borligi hech narsani kafolatlamaydi.
  *
- * Har bir action BESHTA qatlamdan o'tishi SHART:
+ * Har bir action OLTITA qatlamdan o'tishi SHART:
  *   1. Rol tekshiruvi     — requireAuth / requireRole
  *   2. So'rov cheklovi    — foydalanuvchi + IP bo'yicha (pastdagi izoh)
  *   3. Kirish validatsiyasi — zod (istisno yo'q)
  *   4. Xato xavfsizligi   — texnik detal foydalanuvchiga chiqmaydi
  *   5. Audit jurnali      — CREATE / UPDATE / DELETE avtomatik
+ *   6. Kuzatuv (PR G3)    — har bir rad etish/xato serverda qayd etiladi
  *
  * Auth tekshiruvi validatsiyadan OLDIN: kirmagan odamga sxema tafsiloti sizib chiqmasin.
+ *
+ * 6-QATLAM NEGA QO'SHILDI (PR G3)
+ * -------------------------------
+ * Ilgari bu fayldagi har bir `catch` xatoni **butunlay jim** yutib yuborardi:
+ * foydalanuvchiga "Amal bajarilmadi" chiqardi, server esa hech qayerga
+ * hech narsa yozmasdi. Bu ikki tomondan xavfli edi:
+ *
+ *   1. HUJUMNI KO'RMASLIK. Skript bilan qilinayotgan hujum aynan shu
+ *      yo'llardan o'tadi — sxemani buzadigan yuzlab so'rov, rad etilgan
+ *      rol urinishlari, cheklovga urilishlar. Hammasi jim bo'lsa, hujum
+ *      normal ishlashdan farq qilmaydi: log'da bo'sh, grafikda bo'sh.
+ *      Ya'ni "teshik yo'q" degan xulosani ham, "hujum bo'lmadi" degan
+ *      xulosani ham ISBOTLAB bo'lmaydi.
+ *   2. NOSOZLIKNI TOPOLMASLIK. Ish joyida "saqlanmadi" degan shikoyat
+ *      kelsa, sababni aniqlashning imkoni yo'q edi — iz qolmagan.
+ *
+ * Endi har bir rad etish va xato `logError` orqali qayd etiladi. `logError`
+ * xato matnini `sanitizeErrorMessage` dan o'tkazadi (email, telefon, bcrypt
+ * xeshi, `DATABASE_URL` o'chiriladi), `meta` ni `redactMeta` tozalaydi.
+ * Foydalanuvchiga ko'rinadigan xabar esa O'ZGARMADI — texnik detal, sxema
+ * tafsiloti va Prisma kodlari hamon tashqariga chiqmaydi.
  */
 
 export type ActionOk<T> = { ok: true; data: T };
@@ -141,11 +164,29 @@ type SafeActionOptions<TSchema extends z.ZodTypeAny, TResult> = {
 };
 
 /**
+ * Log yozuvlarida action'ni ajratish uchun nom.
+ *
+ * Audit sozlamasi bo'lsa — "action:Grade:UPDATE" ko'rinishida, aks holda
+ * shunchaki "action". Bu nom log'da qidirish uchun ishlatiladi, shuning
+ * uchun unga foydalanuvchi kiritgan hech narsa QO'SHILMAYDI (aks holda
+ * log'ga o'zboshimcha matn kiritish yo'li ochilardi).
+ */
+function scopeOf<TSchema extends z.ZodTypeAny, TResult>(
+  options: SafeActionOptions<TSchema, TResult>
+): string {
+  return options.audit
+    ? `action:${options.audit.entity}:${options.audit.action}`
+    : "action";
+}
+
+/**
  * Server Action yaratadi: rol → cheklov → zod → handler → audit.
  */
 export function createAction<TSchema extends z.ZodTypeAny, TResult>(
   options: SafeActionOptions<TSchema, TResult>
 ) {
+  const scope = scopeOf(options);
+
   return async (raw: unknown): Promise<ActionResult<TResult>> => {
     let user: SessionUser;
     try {
@@ -154,6 +195,14 @@ export function createAction<TSchema extends z.ZodTypeAny, TResult>(
         : await requireAuth();
     } catch (error) {
       if (isNextControlFlowError(error)) throw error;
+
+      // Bu yerga yetib kelish NORMAL EMAS: ruxsat yo'qligi `redirect()`
+      // bilan hal bo'ladi (u yuqorida qaytib ketadi). Demak bu haqiqiy
+      // nosozlik — masalan baza javob bermayapti va sessiyani tekshirib
+      // bo'lmadi. Ilgari bu holat butunlay jim edi: foydalanuvchi
+      // "Kirish talab qilinadi" ko'rib, hisobim buzildi deb o'ylardi,
+      // haqiqiy sabab esa hech qayerga yozilmasdi.
+      logError(scope, error, { stage: "auth", roles: options.roles ?? null });
       return { ok: false, error: "Kirish talab qilinadi." };
     }
 
@@ -164,11 +213,41 @@ export function createAction<TSchema extends z.ZodTypeAny, TResult>(
     if (
       !consume(`action:${user.id}:${ip}`, options.rateLimit ?? ACTION_RULE)
     ) {
+      // Cheklovga urilish — xato emas, lekin XAVFSIZLIK SIGNALI.
+      // Oddiy foydalanuvchi daqiqada 40 ta yozish amalini bajarmaydi;
+      // bu chegaraga urilgan hisob deyarli har doim skript (yoki
+      // o'g'irlangan sessiya) bo'ladi. Shuning uchun qayd etiladi —
+      // aks holda hujum urinishi umuman iz qoldirmasdi.
+      logError(scope, new Error("so'rov cheklovi ishga tushdi"), {
+        stage: "rateLimit",
+        userId: user.id,
+        role: user.role,
+      });
       return { ok: false, error: RATE_LIMIT_MESSAGE };
     }
 
     const parsed = options.schema.safeParse(raw);
     if (!parsed.success) {
+      /**
+       * Sxemadan o'tmagan so'rov — ikkinchi xavfsizlik signali.
+       *
+       * Normal foydalanuvchi interfeysi orqali bunday so'rov deyarli
+       * yubormaydi (forma o'zi tekshiradi). Ya'ni bu ko'pincha qo'lda
+       * yasalgan so'rov — sxemani "sinab ko'rish" urinishi.
+       *
+       * DIQQAT — FAQAT MAYDON NOMLARI VA XATO TURI yoziladi, QIYMATLAR
+       * EMAS. Aks holda log'ga parol, telefon, baho kabi qiymatlar
+       * tushardi: hujumchi ataylab parolni noto'g'ri maydonga yuborib,
+       * uni log faylida ochiq matnda "saqlab qo'yishi" mumkin edi.
+       */
+      logError(scope, new Error("kirish ma'lumoti sxemadan o'tmadi"), {
+        stage: "validation",
+        userId: user.id,
+        issues: parsed.error.issues.slice(0, 10).map((issue) => ({
+          path: issue.path.join("."),
+          code: issue.code,
+        })),
+      });
       return { ok: false, error: "Ma'lumotlar noto'g'ri. Qayta tekshiring." };
     }
 
@@ -189,7 +268,20 @@ export function createAction<TSchema extends z.ZodTypeAny, TResult>(
       return { ok: true, data };
     } catch (error) {
       if (isNextControlFlowError(error)) throw error;
+
       const mapped = prismaErrorMessage(error);
+
+      // Eng muhim joy: ilgari HAR QANDAY xato shu yerda izsiz yo'qolardi.
+      // Endi sabab serverda qoladi, foydalanuvchiga esa avvalgidek faqat
+      // umumiy xabar chiqadi — ikkisi bir-biriga zid emas.
+      logError(scope, error, {
+        stage: "handler",
+        userId: user.id,
+        // `mapped` — bu foydalanuvchiga qanday xabar ketganini bilish uchun.
+        // Prisma kodining o'zi emas, shuning uchun maxfiy ma'lumot yo'q.
+        userMessage: mapped ?? "umumiy",
+      });
+
       return {
         ok: false,
         error: mapped ?? "Amal bajarilmadi. Qayta urinib ko'ring.",
