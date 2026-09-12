@@ -5,6 +5,7 @@ import { db } from "@/lib/db";
 import { requireAdmin } from "@/lib/auth-guard";
 import { createAction } from "@/lib/safe-action";
 import { checkImportHeaders } from "@/lib/import-guards";
+import { PREVIEW_RATE_LIMIT_MESSAGE, allowImportPreview } from "@/lib/import-preview-limit";
 import {
   MAX_IMPORT_FILE_BYTES,
   MAX_IMPORT_ROWS,
@@ -122,7 +123,14 @@ export async function previewStudentImport(
   _prev: StudentPreviewState | null,
   formData: FormData
 ): Promise<StudentPreviewState> {
-  await requireAdmin();
+  const user = await requireAdmin();
+
+  // So'rov cheklovi: bu qadam `createAction` dan o'tmaydi (u FormData va
+  // fayl bilan ishlamaydi), shuning uchun cheklov ochiq qolgan edi —
+  // sababi `import-preview-limit.ts` da batafsil yozilgan.
+  if (!(await allowImportPreview(user.id))) {
+    return { ok: false, error: PREVIEW_RATE_LIMIT_MESSAGE };
+  }
 
   const file = formData.get("file");
   if (!(file instanceof File) || file.size === 0) {

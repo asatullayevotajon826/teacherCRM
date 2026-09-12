@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { Locale, StudentStatus } from "@prisma/client";
 import { MAX_IMPORT_ROWS, normalizeKey } from "./excel";
+import { passwordSchema } from "./password";
 
 /**
  * IMPORT BIZNES-QOIDALARI
@@ -338,11 +339,23 @@ export function mapTeacherRow(values: Record<string, string>): MappedRow<Teacher
     }
   }
 
+  /**
+   * PAROL — QOIDA BITTA MANBADAN (G2b)
+   *
+   * Ilgari bu yerda qoida qo'lda takrorlangan edi: `length < 8 || harf yo'q ||
+   * raqam yo'q`. Ya'ni forma 12 belgi talab qilganda import 8 belgini
+   * "tayyor" deb ko'rsatardi. Endi tekshiruv `passwordSchema` ning o'zi —
+   * xato matni ham shundan olinadi, shuning uchun chegara o'zgarsa bu yerda
+   * yangilash kerak bo'lmaydi (unutish ehtimoli nolga tushadi).
+   */
   let password: string | undefined;
   const rawPassword = get("password");
   if (rawPassword !== "") {
-    if (rawPassword.length < 8 || !/[A-Za-z]/.test(rawPassword) || !/\d/.test(rawPassword)) {
-      errors.push("Parol kamida 8 belgi, harf va raqamdan iborat bo'lishi kerak (yoki bo'sh qoldiring — tizim o'zi yasaydi).");
+    const checked = passwordSchema.safeParse(rawPassword);
+    if (!checked.success) {
+      const reason =
+        checked.error.issues[0]?.message ?? "Parol siyosatiga mos emas.";
+      errors.push(`${reason} Yoki ustunni bo'sh qoldiring — tizim o'zi kuchli parol yasaydi.`);
     } else {
       password = rawPassword;
     }
@@ -406,7 +419,8 @@ function randomChar(alphabet: string): string {
 
 /**
  * Excel'da parol ustuni bo'sh bo'lsa ishlatiladi.
- * Natija `passwordSchema` talabiga mos: 8+ belgi, harf va raqam bor.
+ * Natija `passwordSchema` talabiga mos: 12 belgi, harf va raqam bor, lug'at
+ * va naqsh tekshiruvlaridan o'tadi (tasodifiy belgilar).
  *
  * OLDINGI NUSXADAGI NUQSONLAR (tuzatildi):
  *
@@ -507,7 +521,13 @@ const teacherCommitRowSchema = z.object({
   subjectNames: z.array(z.string().max(120)).max(30),
   locale: z.nativeEnum(Locale),
   isActive: z.boolean(),
-  password: z.string().min(8).max(128).optional(),
+  /**
+   * Klientdan kelgan parol SXEMA DARAJASIDA ham siyosatdan o'tadi (G2b).
+   * Ilgari bu yerda `z.string().min(8).max(128)` turardi — ya'ni qo'lda
+   * yasalgan so'rov bilan zaif parol sxemadan o'tib ketardi va faqat
+   * keyingi qatlamda to'xtatilardi. Endi birinchi darvozada to'xtaydi.
+   */
+  password: passwordSchema.optional(),
   existingId: z.string().min(1).nullable().optional(),
 });
 
