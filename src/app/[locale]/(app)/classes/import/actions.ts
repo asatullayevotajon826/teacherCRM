@@ -4,7 +4,10 @@ import { revalidatePath } from "next/cache";
 import { db } from "@/lib/db";
 import { requireAdmin } from "@/lib/auth-guard";
 import { createAction } from "@/lib/safe-action";
+import { describeErrorSafely } from "@/lib/audit";
+import { logError } from "@/lib/logger";
 import { checkImportHeaders } from "@/lib/import-guards";
+import { PREVIEW_RATE_LIMIT_MESSAGE, allowImportPreview } from "@/lib/import-preview-limit";
 import {
   loadValidAcademicYearIds,
   loadValidClassIds,
@@ -52,6 +55,12 @@ import {
  * import sinfni YILSIZ yaratardi (faqat ogohlantirish yozib). Bunday sinf
  * takrorlanishga qarshi cheklovdan chetda qolardi. Endi bunday qator
  * "xato" deb belgilanadi va umuman yozilmaydi.
+ *
+ * CHEKLOV VA QAYD ETISH (PR G3b): PR G2b preview cheklovini, PR G3 esa
+ * xatolarni qayd etishni o'quvchi va o'qituvchi importiga qo'shgan edi —
+ * lekin AYNAN SHU FAYL ikkisida ham chetda qolgan. Ya'ni sinf importi
+ * uchinchi oqim bo'lib, cheklovsiz va izsiz ishlab turgan edi. Shu bilan
+ * uchta import oqimining hammasi bir xil qoidaga keltirildi.
  */
 
 export type ClassPreviewState =
@@ -75,7 +84,20 @@ export async function previewClassImport(
   _prev: ClassPreviewState | null,
   formData: FormData
 ): Promise<ClassPreviewState> {
-  await requireAdmin();
+  const user = await requireAdmin();
+
+  // So'rov cheklovi: bu qadam `createAction` dan o'tmaydi (u FormData va
+  // fayl bilan ishlamaydi), shuning uchun cheklov ochiq qolgan edi —
+  // sababi `import-preview-limit.ts` da batafsil yozilgan. Sinf preview'i
+  // ham bazadan BARCHA sinf, o'quv yili va o'qituvchi ro'yxatini tortadi,
+  // ya'ni boshqa importlar bilan bir xil darajada "qimmat" amal.
+  if (!(await allowImportPreview(user.id))) {
+    logError("import:class:preview", new Error("preview cheklovi ishga tushdi"), {
+      stage: "rateLimit",
+      userId: user.id,
+    });
+    return { ok: false, error: PREVIEW_RATE_LIMIT_MESSAGE };
+  }
 
   const file = formData.get("file");
   if (!(file instanceof File) || file.size === 0) {
@@ -91,7 +113,13 @@ export async function previewClassImport(
   let parsed;
   try {
     parsed = parseExcel(await file.arrayBuffer());
-  } catch {
+  } catch (error) {
+    // Fayl nomi log'ga yozilmaydi (foydalanuvchi matni) — faqat hajmi.
+    logError("import:class:preview", error, {
+      stage: "parse",
+      userId: user.id,
+      fileSize: file.size,
+    });
     return { ok: false, error: "Faylni o'qib bo'lmadi. U Excel fayl ekanini tekshiring." };
   }
 
@@ -310,10 +338,27 @@ export async function previewClassImport(
 /* 2-qadam: yozish                                                     */
 /* ------------------------------------------------------------------ */
 
+/**
+ * Takrorlanmaydigan sabablar ro'yxati (eng ko'pi 5 ta) — o'quvchi va
+ * o'qituvchi importidagi mantiqning aynan o'zi. 500 ta bir xil sababni
+ * yozish log'ni ham, audit jurnalini ham foydasiz qilardi.
+ */
+const MAX_FAILURE_REASONS = 5;
+
+function collectReason(reasons: string[], reason: string): void {
+  if (reasons.length >= MAX_FAILURE_REASONS) return;
+  if (reasons.includes(reason)) return;
+  reasons.push(reason);
+}
+
 const commitAction = createAction({
   roles: ["ADMIN"],
   schema: classImportPayloadSchema,
-  handler: async (input): Promise<ImportOutcome> => {
+  handler: async (
+    input,
+    user
+  ): Promise<ImportOutcome & { failureReasons: string[] }> => {
+    const failureReasons: string[] = [];
     const outcome: ImportOutcome = {
       created: 0,
       updated: 0,
@@ -348,16 +393,19 @@ const commitAction = createAction({
       // bilan boshlanmaydi: id har doim bo'lishi va mavjud bo'lishi kerak.
       if (!validYears.has(row.academicYearId)) {
         outcome.failed += 1;
+        collectReason(failureReasons, "o'quv yili topilmadi");
         addMessage(`${row.rowNumber}-qator: o'quv yili topilmadi (ma'lumot eskirgan bo'lishi mumkin).`);
         continue;
       }
       if (row.homeroomTeacherId && !validTeachers.has(row.homeroomTeacherId)) {
         outcome.failed += 1;
+        collectReason(failureReasons, "sinf rahbari topilmadi");
         addMessage(`${row.rowNumber}-qator: sinf rahbari topilmadi.`);
         continue;
       }
       if (row.existingId && !validClasses.has(row.existingId)) {
         outcome.failed += 1;
+        collectReason(failureReasons, "yangilanadigan sinf topilmadi");
         addMessage(`${row.rowNumber}-qator: yangilanadigan sinf topilmadi.`);
         continue;
       }
@@ -386,17 +434,40 @@ const commitAction = createAction({
           });
           outcome.created += 1;
         }
-      } catch {
+      } catch (error) {
         outcome.failed += 1;
-        addMessage(
-          `${row.rowNumber}-qator: yozib bo'lmadi ("${row.name}"). Sinf rahbari boshqa sinfga biriktirilgan bo'lishi mumkin.`
-        );
+
+        /**
+         * ILGARI SHU YERDA `catch {}` TURARDI — va ustiga foydalanuvchiga
+         * TAXMINIY sabab ko'rsatilardi ("Sinf rahbari boshqa sinfga
+         * biriktirilgan bo'lishi mumkin"). Ikki xato bir vaqtda edi:
+         *   1. Server hech qayerga hech narsa yozmasdi — ya'ni skript
+         *      bilan qilinadigan urinish (unique buzilishi, begona id,
+         *      baza cheklovlarini "sinab ko'rish") izsiz qolardi.
+         *   2. Admin noto'g'ri diagnoz olardi: haqiqiy sabab baza uzilishi
+         *      yoki boshqa cheklov bo'lsa ham, xabar rahbarni ko'rsatardi.
+         *
+         * Endi haqiqiy sabab `describeErrorSafely` orqali tozalanib
+         * serverda va audit jurnalida saqlanadi; foydalanuvchiga esa
+         * taxmin emas, neytral xabar ko'rsatiladi (texnik detal tashqariga
+         * chiqmaydi).
+         */
+        const reason = describeErrorSafely(error);
+        collectReason(failureReasons, reason);
+        logError("import:class:commit", error, {
+          stage: "write",
+          userId: user.id,
+          mode: input.mode,
+          isUpdate: Boolean(row.existingId),
+        });
+
+        addMessage(`${row.rowNumber}-qator: yozib bo'lmadi. Sabab jurnalga qayd etildi.`);
       }
     }
 
     revalidatePath("/classes");
     revalidatePath("/schedule");
-    return outcome;
+    return { ...outcome, failureReasons };
   },
   audit: {
     action: "CREATE",
@@ -409,6 +480,8 @@ const commitAction = createAction({
       updated: result.updated,
       skipped: result.skipped,
       failed: result.failed,
+      // Nega yozilmadi — endi jurnalda ko'rinadi (tozalangan matn).
+      failureReasons: result.failureReasons,
     }),
   },
 });
@@ -416,5 +489,8 @@ const commitAction = createAction({
 export async function commitClassImport(payload: unknown): Promise<ClassCommitState> {
   const result = await commitAction(payload);
   if (!result.ok) return { ok: false, error: result.error };
-  return { ok: true, data: result.data };
+
+  // `failureReasons` faqat server jurnali uchun — interfeysga chiqmaydi.
+  const { failureReasons: _unused, ...outcome } = result.data;
+  return { ok: true, data: outcome };
 }
