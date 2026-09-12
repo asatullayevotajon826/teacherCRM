@@ -164,7 +164,7 @@ type AssignOutcome = {
 };
 
 /**
- * O'QUVCHILARNI SINFGA BIRIKTIRISH — QAT'IY YO'L.
+ * O'QUVCHILARNI SINFGA BIRIKTIRISH — QAT'IY YO'L (kundalik amal).
  *
  * NIMA XATO EDI:
  * Avvalgi kod `updateMany({ where: { id: { in: input.studentIds } } })`
@@ -178,19 +178,17 @@ type AssignOutcome = {
  * Tizimda "o'quvchi qaysi sinfda edi" tarixi saqlanmaydi — faqat joriy
  * `Student.classId`. Baholar esa darsga, dars sinfga bog'langan. Demak
  * o'quvchi ko'chirilganda eski sinfning jurnali va reytingi ORQAGA QARAB
- * o'zgaradi, o'quvchining o'zi esa u ro'yxatda yo'q. AuditLog da faqat
- * `moved: N` qolardi, shuning uchun keyin kim qaysi sinfdan olinganini
- * hech kim aniqlab bera olmasdi.
+ * o'zgaradi, o'quvchining o'zi esa u ro'yxatda yo'q.
  *
  * NIMA QILINDI (kelishilgan "C" varianti):
  * Bu amal — KUNDALIK yo'l va u boshqa sinfga UMUMAN tegmaydi. Faqat
  * sinfi yo'q (`classId = null`) o'quvchilar biriktiriladi. Boshqa sinfdagi
  * o'quvchi ro'yxatga tushsa — u yozilmaydi, soni qaytariladi va
- * foydalanuvchiga xabar ko'rsatiladi.
+ * foydalanuvchiga aniq xabar ko'rsatiladi.
  *
- * Ataylab ko'chirish uchun ALOHIDA amal bo'ladi (H3b): u eski sinfni
- * AuditLog ga yozadi. Shunday qilib shoshib bosilgan tugma ma'lumotni
- * buzmaydi, kerakli ish esa bloklanmaydi.
+ * Ataylab ko'chirish uchun pastdagi `moveStudentsAction` bor: u eski sinf
+ * ID sini AuditLog ga yozadi. Shunday qilib shoshib bosilgan tugma
+ * ma'lumotni buzmaydi, kerakli ish esa bloklanmaydi.
  *
  * IKKI QATLAM:
  *  1) o'qish paytida `classId` tekshiriladi (aniq xabar berish uchun);
@@ -277,6 +275,129 @@ const assignStudentsAction = createAction({
   },
 });
 
+type MoveOutcome = {
+  /** Haqiqatan ko'chirilgan o'quvchilar soni. */
+  moved: number;
+  /** Sinfi yo'q bo'lgani uchun TEGILMAGANLAR — ular kundalik amal orqali qo'shiladi. */
+  skippedUnassigned: number;
+  /** Bazada topilmagan ID lar soni. */
+  missing: number;
+  /** Allaqachon shu sinfda bo'lganlar. */
+  already: number;
+  /** O'qish va yozish orasida holati o'zgarganlar (poyga). */
+  raced: number;
+  /** Kim qaysi sinfdan olindi — AuditLog uchun. */
+  moves: Array<{ studentId: string; from: string }>;
+};
+
+/**
+ * O'QUVCHINI BOSHQA SINFDAN KO'CHIRISH — ATAYLAB BOSILADIGAN AMAL.
+ *
+ * NEGA ALOHIDA AMAL:
+ * Yuqoridagi kundalik biriktirish boshqa sinfga umuman tegmaydi. Lekin
+ * maktabda o'quvchi yil o'rtasida 9-A dan 9-B ga o'tishi odatiy hol.
+ * Shuning uchun ko'chirish mumkin — ammo faqat shu amal orqali va HAR
+ * DOIM iz qoldirib. Ya'ni xavfli harakat kundalik harakatdan ajratilgan:
+ * shoshib bosilgan "biriktirish" tugmasi boshqa sinfni buzmaydi.
+ *
+ * NIMA YOZIB QOLDIRILADI:
+ * `moves` massivida har bir o'quvchining ESKI SINF ID si bor. Bu majburiy,
+ * chunki tizimda sinf tarixi jadvali yo'q: bu yozuv bo'lmasa "farzandim
+ * nega 9-B da?" degan savolga javob beradigan manba qolmaydi.
+ *
+ * QARAMA-QARSHI YO'NALISH:
+ * Sinfi yo'q o'quvchi bu amalga tushsa — TEGILMAYDI. Aks holda bu amal
+ * kundalik yo'lning dublikatiga aylanib, H3a dagi qat'iylikni aylanib
+ * o'tish yo'li bo'lib qolardi.
+ */
+const moveStudentsAction = createAction({
+  roles: ["ADMIN"],
+  schema: classStudentsSchema,
+  handler: async (input): Promise<MoveOutcome> => {
+    const empty: MoveOutcome = {
+      moved: 0,
+      skippedUnassigned: 0,
+      missing: 0,
+      already: 0,
+      raced: 0,
+      moves: [],
+    };
+
+    const target = await db.class.findUnique({
+      where: { id: input.classId },
+      select: { id: true },
+    });
+    if (!target) {
+      return { ...empty, missing: input.studentIds.length };
+    }
+
+    const ids = Array.from(new Set(input.studentIds));
+
+    const students = await db.student.findMany({
+      where: { id: { in: ids } },
+      select: { id: true, classId: true },
+    });
+
+    const missing = ids.length - students.length;
+    const skippedUnassigned = students.filter(
+      (student) => student.classId === null
+    ).length;
+    const already = students.filter(
+      (student) => student.classId === target.id
+    ).length;
+
+    // Faqat BOSHQA sinfdagilar. `classId` null bo'lmagani tekshirilgani
+    // uchun `from` qiymati har doim mavjud.
+    const movable = students.filter(
+      (student) => student.classId !== null && student.classId !== target.id
+    );
+
+    let moved = 0;
+    if (movable.length > 0) {
+      const result = await db.student.updateMany({
+        // Shartda ham himoya: o'qishdan keyin o'quvchi sinfsiz qolgan yoki
+        // allaqachon shu sinfga o'tgan bo'lsa, qator tegilmaydi.
+        where: {
+          id: { in: movable.map((student) => student.id) },
+          classId: { not: null },
+          NOT: { classId: target.id },
+        },
+        data: { classId: target.id },
+      });
+      moved = result.count;
+    }
+
+    revalidateClasses(target.id);
+    return {
+      moved,
+      skippedUnassigned,
+      missing,
+      already,
+      raced: movable.length - moved,
+      moves: movable.slice(0, AUDIT_ID_LIMIT).map((student) => ({
+        studentId: student.id,
+        from: student.classId as string,
+      })),
+    };
+  },
+  audit: {
+    action: "UPDATE",
+    entity: "Class",
+    entityId: (input) => input.classId,
+    meta: (input, result) => ({
+      operation: "moveStudents",
+      requested: input.studentIds.length,
+      moved: result.moved,
+      skippedUnassigned: result.skippedUnassigned,
+      missing: result.missing,
+      alreadyInClass: result.already,
+      raced: result.raced,
+      // Eng muhim qism: kim qaysi sinfdan olindi.
+      moves: result.moves,
+    }),
+  },
+});
+
 const removeStudentAction = createAction({
   roles: ["ADMIN"],
   schema: classStudentSchema,
@@ -339,11 +460,25 @@ export async function assignStudents(formData: FormData): Promise<void> {
     redirectNever(`/classes/${classId}?error=assign`);
   }
   // Bir nechta o'quvchi rad etilgan bo'lsa, jimgina "bajarildi" deb
-  // qaytmaymiz. Hozircha mavjud `assign` xabari ishlatiladi; aniq matn
-  // ("N o'quvchi boshqa sinfda") H3b da 3 tilda qo'shiladi.
+  // qaytmaymiz — foydalanuvchi nima bo'lganini bilishi kerak.
   const { blocked, missing, raced } = result.data;
   if (blocked > 0 || missing > 0 || raced > 0) {
-    redirectNever(`/classes/${classId}?error=assign`);
+    redirectNever(`/classes/${classId}?error=assignBlocked`);
+  }
+  redirectNever(`/classes/${classId}`);
+}
+
+export async function moveStudents(formData: FormData): Promise<void> {
+  const raw = formDataToObject(formData);
+  const classId = typeof raw.classId === "string" ? raw.classId : "";
+  const result = await moveStudentsAction(raw);
+  if (!result.ok) {
+    redirectNever(`/classes/${classId}?error=move`);
+  }
+  // Hech kim ko'chirilmagan bo'lsa ham xabar beramiz: aks holda admin
+  // "ko'chirdim" deb o'ylab qolardi.
+  if (result.data.moved === 0) {
+    redirectNever(`/classes/${classId}?error=moveBlocked`);
   }
   redirectNever(`/classes/${classId}`);
 }
