@@ -15,30 +15,54 @@ import {
  * balki cheklov QARORI: qancha urinish hisoblanadi va kalitda nima
  * turadi. Aynan shu ikki joydagi xato jimgina ketadi: ilova ishlaydi, log
  * toza bo'ladi, faqat himoya yo'q bo'ladi.
+ *
+ * MUHIM: vaqtni "ko'zga chamalab" yozish taqiqlanadi. Oyna chegarasi
+ * har doim `windowStart` dan hisoblanib, unga nisbatan surilади — aks
+ * holda testning o'zi noto'g'ri bo'lib, himoya haqida yolg'on ma'lumot
+ * beradi (shu xato PR G4c ning birinchi urinishida sodir bo'lgan).
  */
 
 const MINUTE = 60_000;
 
+/** Berilgan vaqtni o'z ichiga olgan oynaning boshlanish nuqtasi. */
+const windowStart = (nowMs: number, windowMs = MINUTE) =>
+  Math.floor(nowMs / windowMs) * windowMs;
+
+/** Sinov uchun barqaror tayanch nuqta: aniq oyna boshi. */
+const BOSH = windowStart(1_700_000_045_000); // = 1_700_000_040_000
+
 describe("windowsFor", () => {
   it("oynani chegaraga tekislaydi va oldingi oynani to'g'ri beradi", () => {
-    const { current, previous } = windowsFor(MINUTE, 1_700_000_045_000);
+    const { current, previous } = windowsFor(MINUTE, BOSH + 5_000);
 
     expect(current.getTime() % MINUTE).toBe(0);
+    expect(current.getTime()).toBe(BOSH);
     expect(previous.getTime()).toBe(current.getTime() - MINUTE);
   });
 
   it("o'qish va yozish bir xil oynaga tushadi", () => {
     // Ikki chaqiruv bir oyna ichida bo'lsa, katakcha ham bir xil bo'lishi
     // shart — aks holda yozilgan urinish hisobdan chetda qolardi.
-    const a = windowsFor(MINUTE, 1_700_000_001_000);
-    const b = windowsFor(MINUTE, 1_700_000_059_999);
+    // Oynaning eng boshi va eng oxiri olinadi.
+    const a = windowsFor(MINUTE, BOSH);
+    const b = windowsFor(MINUTE, BOSH + MINUTE - 1);
 
     expect(a.current.getTime()).toBe(b.current.getTime());
+    expect(a.current.getTime()).toBe(BOSH);
+  });
+
+  it("oynadan chiqqan zahoti katakcha almashadi", () => {
+    // Chegaradan 1 ms o'tsa — bu allaqachon keyingi oyna.
+    const oxiri = windowsFor(MINUTE, BOSH + MINUTE - 1);
+    const keyingi = windowsFor(MINUTE, BOSH + MINUTE);
+
+    expect(keyingi.current.getTime()).toBe(oxiri.current.getTime() + MINUTE);
+    expect(keyingi.previous.getTime()).toBe(oxiri.current.getTime());
   });
 
   it("oyna boshida oldingi hisob to'liq, oxirida deyarli nol", () => {
-    const boshi = windowsFor(MINUTE, 1_700_000_040_000);
-    const oxiri = windowsFor(MINUTE, 1_700_000_099_000);
+    const boshi = windowsFor(MINUTE, BOSH);
+    const oxiri = windowsFor(MINUTE, BOSH + 59_000);
 
     expect(boshi.previousWeight).toBeCloseTo(1, 5);
     expect(oxiri.previousWeight).toBeCloseTo(1 / 60, 5);
@@ -46,7 +70,7 @@ describe("windowsFor", () => {
 
   it("vazn har doim 0..1 oralig'ida", () => {
     for (let offset = 0; offset < MINUTE; offset += 3_137) {
-      const { previousWeight } = windowsFor(MINUTE, 1_700_000_040_000 + offset);
+      const { previousWeight } = windowsFor(MINUTE, BOSH + offset);
       expect(previousWeight).toBeGreaterThanOrEqual(0);
       expect(previousWeight).toBeLessThanOrEqual(1);
     }
@@ -63,12 +87,21 @@ describe("windowsFor", () => {
 describe("estimateCount", () => {
   it("oyna chegarasidagi portlashni to'sadi", () => {
     // Qat'iy oynada bu hujum ishlardi: oxirgi soniyada 40 ta, keyin yangi
-    // oynada yana 40 ta — bir soniyada 80 so'rov. Yangi oyna boshlanganiga
-    // 1 soniya bo'lgan holatni tekshiramiz.
-    const { previousWeight } = windowsFor(MINUTE, 1_700_000_061_000);
+    // oynada yana 40 ta — bir soniyada 80 so'rov.
+    // Yangi oyna boshlanganiga 1 soniya bo'lgan holat: oldingi oynaning
+    // 40 urinishi hamon deyarli to'liq hisobda turishi kerak.
+    const { previousWeight } = windowsFor(MINUTE, BOSH + 1_000);
     const limit = 40;
 
+    expect(previousWeight).toBeGreaterThan(0.9);
     expect(estimateCount(1, 40, previousWeight)).toBeGreaterThan(limit);
+  });
+
+  it("oyna o'rtasida oldingi hisob yarmi qoladi", () => {
+    const { previousWeight } = windowsFor(MINUTE, BOSH + MINUTE / 2);
+
+    expect(previousWeight).toBeCloseTo(0.5, 5);
+    expect(estimateCount(0, 40, previousWeight)).toBeCloseTo(20, 5);
   });
 
   it("oldingi oyna to'liq chiqib ketsa faqat joriy hisob qoladi", () => {
