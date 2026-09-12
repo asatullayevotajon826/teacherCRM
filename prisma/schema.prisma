@@ -629,3 +629,39 @@ model AuditLog {
   @@index([userId, createdAt])
   @@index([entity, entityId])
 }
+
+// ------------------------------------------------------------------
+// So'rov cheklovi hisoblagichi (PR G4a)
+// ------------------------------------------------------------------
+
+// DOIMIY SO'ROV CHEKLOVI.
+//
+// Ilgari hisoblagich server jarayonining XOTIRASIDA edi. Bu ikki teshik
+// qoldirardi: (1) har qayta ishga tushirishda hisob NOLGA qaytardi, ya'ni
+// login yoki import urinishlari chegarasini "tozalash" yo'li bor edi;
+// (2) bir nechta instansiyada har biri o'z hisobini yuritib, amaldagi
+// chegara instansiya soniga ko'payardi.
+//
+// Kalit ko'rinishi: `action:<userId>:<ip>`, `import-preview:<userId>:<ip>`.
+// Unga foydalanuvchi kiritgan matn QO'SHILMAYDI.
+//
+// MAXFIYLIK: kalitda IP manzil bor (shaxsiy ma'lumot), shuning uchun
+// qatorlar uzoq turmaydi — `rate-limit-db.ts` eskirgan oynalarni
+// avtomatik o'chiradi. Jadvalda parol, email, telefon yoki erkin matn
+// SAQLANMAYDI.
+//
+// Birlamchi kalit `[key, windowStart]`: bitta kalitning bitta oynasi uchun
+// bitta qator. Oshirish `INSERT ... ON CONFLICT DO UPDATE` bilan atomar
+// bajariladi, shuning uchun parallel so'rovlar hisobdan chetda qolmaydi.
+//
+// `id` maydoni ATAYLAB yo'q: bu texnik hisoblagich, unga havola qilinmaydi
+// va audit qilinmaydi.
+model RateHit {
+  key         String
+  windowStart DateTime
+  count       Int      @default(0)
+
+  @@id([key, windowStart])
+  // Tozalash so'rovi (`windowStart < cutoff`) shu indeksdan foydalanadi.
+  @@index([windowStart])
+}

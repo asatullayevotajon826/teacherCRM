@@ -1,4 +1,4 @@
-import { consume } from "./rate-limit-core";
+import { consumeDb } from "./rate-limit-db";
 import { getRequestIp } from "./rate-limit";
 
 /**
@@ -41,9 +41,12 @@ import { getRequestIp } from "./rate-limit";
  * bloklardi; faqat foydalanuvchi bo'yicha cheklash esa bir nechta hisobni
  * parallel ishlatib chetlab o'tishga imkon berardi.
  *
- * CHEKLOV (halollik): hisoblagich xotirada — server qayta ishga tushsa
- * nolga qaytadi va bir nechta instansiyada umumiy bo'lmaydi. Buni doimiy
- * qilish PR G4 ning vazifasi.
+ * HISOB QAYERDA (PR G4a da o'zgardi):
+ *
+ * Ilgari hisoblagich server xotirasida edi — qayta ishga tushirish uni
+ * nolga qaytarardi, ya'ni chegarani "tozalash" yo'li bor edi. Endi
+ * `consumeDb` orqali PostgreSQL da: barcha jarayon va instansiya uchun
+ * bitta hisob. Chegara va xabar o'zgarmadi.
  */
 const PREVIEW_RULE = { limit: 10, windowMs: 60_000 };
 
@@ -57,5 +60,5 @@ export const PREVIEW_RATE_LIMIT_MESSAGE =
  */
 export async function allowImportPreview(userId: string): Promise<boolean> {
   const ip = await getRequestIp();
-  return consume(`import-preview:${userId}:${ip}`, PREVIEW_RULE);
+  return consumeDb(`import-preview:${userId}:${ip}`, PREVIEW_RULE);
 }
