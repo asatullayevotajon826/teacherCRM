@@ -6,6 +6,8 @@ import { db } from "@/lib/db";
 import { requireAdmin } from "@/lib/auth-guard";
 import { createAction } from "@/lib/safe-action";
 import { checkImportHeaders } from "@/lib/import-guards";
+import { PREVIEW_RATE_LIMIT_MESSAGE, allowImportPreview } from "@/lib/import-preview-limit";
+import { MIN_PASSWORD_LENGTH } from "@/lib/password";
 import {
   isStrongInitialPassword,
   isValidCommitEmail,
@@ -116,7 +118,14 @@ export async function previewTeacherImport(
   _prev: TeacherPreviewState | null,
   formData: FormData
 ): Promise<TeacherPreviewState> {
-  await requireAdmin();
+  const user = await requireAdmin();
+
+  // So'rov cheklovi: bu qadam `createAction` dan o'tmaydi (u FormData va
+  // fayl bilan ishlamaydi), shuning uchun cheklov ochiq qolgan edi —
+  // sababi `import-preview-limit.ts` da batafsil yozilgan.
+  if (!(await allowImportPreview(user.id))) {
+    return { ok: false, error: PREVIEW_RATE_LIMIT_MESSAGE };
+  }
 
   const file = formData.get("file");
   if (!(file instanceof File) || file.size === 0) {
@@ -359,10 +368,12 @@ const commitAction = createAction({
       }
 
       // Parol siyosati: preview dagi qoidaning aynan o'zi qayta qo'llanadi.
+      // Chegara matnda qo'lda yozilmaydi — `MIN_PASSWORD_LENGTH` dan olinadi,
+      // aks holda siyosat o'zgarganda bu xabar eskirib qolardi.
       if (row.password !== undefined && !isStrongInitialPassword(row.password)) {
         outcome.failed += 1;
         addMessage(
-          `${row.rowNumber}-qator: parol siyosatiga mos emas (kamida 8 belgi, harf va raqam).`
+          `${row.rowNumber}-qator: parol siyosatiga mos emas (kamida ${MIN_PASSWORD_LENGTH} belgi, harf va raqam, oson topiladigan parol bo'lmasligi kerak).`
         );
         continue;
       }
