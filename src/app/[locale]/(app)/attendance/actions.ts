@@ -4,6 +4,7 @@ import { revalidatePath } from "next/cache";
 import { db } from "@/lib/db";
 import { createAction, formDataToObject } from "@/lib/safe-action";
 import { redirectNever } from "@/lib/auth-guard";
+import { logError } from "@/lib/logger";
 import { lessonScope } from "@/lib/scope";
 import { toDate, type SaveResult } from "@/lib/academics";
 import { dayOfWeekFromText } from "@/lib/attendance";
@@ -33,6 +34,13 @@ import { queueAbsenceNotices } from "@/lib/absence-notice";
  * RAHBARI ham qo'yishi kerak — o'qituvchi kelmaganda yoki xatoni
  * to'g'rilaganda. Baho esa faqat fan o'qituvchisiga tegishli. Bu
  * assimetriya ataylab qilingan.
+ *
+ * TASHLANGAN KATAKCHALAR QAYD ETILADI (PR G3c): begona katakchani jimgina
+ * tashlash — to'g'ri qaror (xato xabari hujumchiga qaysi dars yoki qaysi
+ * o'quvchi mavjudligini bildirmasligi kerak). Lekin ilgari bu urinish
+ * SERVERDA HAM iz qoldirmasdi, ya'ni IDOR sinovi normal ishlashdan
+ * farq qilmasdi. Endi tashlangan katakchalarning SONI qayd etiladi —
+ * id'lar yozilmaydi, foydalanuvchi ko'radigan javob esa o'zgarmadi.
  */
 
 export type AttendanceFormState = { error?: string };
@@ -73,6 +81,28 @@ const saveAttendanceGridAction = createAction({
         allowedLessons.has(entry.lessonId) &&
         allowedStudents.has(entry.studentId)
     );
+
+    /**
+     * Doiradan tashqari katakchalar soni.
+     *
+     * MAXFIYLIK: faqat SON yoziladi. `studentId`/`lessonId` log'ga
+     * tushirilsa, log'ning o'zi "qaysi id mavjud" degan savolga javob
+     * beradigan manbaga aylanardi.
+     */
+    const droppedEntries = input.entries.length - entries.length;
+    if (droppedEntries > 0) {
+      logError(
+        "attendance:grid",
+        new Error("doiradan tashqari katakchalar tashlab yuborildi"),
+        {
+          stage: "scope",
+          userId: user.id,
+          classId: input.classId,
+          sent: input.entries.length,
+          dropped: droppedEntries,
+        }
+      );
+    }
 
     if (entries.length === 0) {
       return {
