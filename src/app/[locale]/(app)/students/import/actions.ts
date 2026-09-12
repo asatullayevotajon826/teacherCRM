@@ -4,6 +4,8 @@ import { revalidatePath } from "next/cache";
 import { db } from "@/lib/db";
 import { requireAdmin } from "@/lib/auth-guard";
 import { createAction } from "@/lib/safe-action";
+import { describeErrorSafely } from "@/lib/audit";
+import { logError } from "@/lib/logger";
 import { checkImportHeaders } from "@/lib/import-guards";
 import { PREVIEW_RATE_LIMIT_MESSAGE, allowImportPreview } from "@/lib/import-preview-limit";
 import {
@@ -35,6 +37,13 @@ import {
  * Fayl serverda saqlanmaydi: oqimda o'qiladi va xotirada qoladi.
  * Ikkinchi qadam ham qaytadan validatsiya qiladi — brauzerdan kelgan
  * ma'lumotga ishonmaymiz.
+ *
+ * XATOLARNI QAYD ETISH (PR G3): ilgari bu fayldagi `catch` bloklari
+ * xatoni butunlay jim yutib yuborardi — faqat `failed` hisoblagichi
+ * oshardi. Natijada "nega 12 qator yozilmadi?" degan savolga javob
+ * topishning IMKONI YO'Q edi va ataylab qilinayotgan hujum (masalan
+ * qayta-qayta buzuq payload yuborish) normal xatodan farq qilmasdi.
+ * Endi sabab `logError` orqali xavfsiz ko'rinishda serverda qoladi.
  */
 
 export type StudentPreviewState =
@@ -129,6 +138,10 @@ export async function previewStudentImport(
   // fayl bilan ishlamaydi), shuning uchun cheklov ochiq qolgan edi —
   // sababi `import-preview-limit.ts` da batafsil yozilgan.
   if (!(await allowImportPreview(user.id))) {
+    logError("import:student:preview", new Error("preview cheklovi ishga tushdi"), {
+      stage: "rateLimit",
+      userId: user.id,
+    });
     return { ok: false, error: PREVIEW_RATE_LIMIT_MESSAGE };
   }
 
@@ -146,7 +159,15 @@ export async function previewStudentImport(
   let parsed;
   try {
     parsed = parseExcel(await file.arrayBuffer());
-  } catch {
+  } catch (error) {
+    // Buzuq yoki ataylab shikastlangan fayl — parser xatosi qayd etiladi.
+    // Fayl NOMI log'ga yozilmaydi: u foydalanuvchi kiritadigan matn va
+    // ichida shaxsiy ma'lumot bo'lishi mumkin. Faqat hajmi qoldiriladi.
+    logError("import:student:preview", error, {
+      stage: "parse",
+      userId: user.id,
+      fileSize: file.size,
+    });
     return { ok: false, error: "Faylni o'qib bo'lmadi. U Excel fayl ekanini tekshiring." };
   }
 
@@ -294,11 +315,28 @@ export async function previewStudentImport(
 /* 2-qadam: yozish                                                     */
 /* ------------------------------------------------------------------ */
 
+/**
+ * Takrorlanmaydigan sabablar ro'yxati (eng ko'pi 5 ta).
+ *
+ * 500 qatorli import butunlay yiqilsa, 500 ta bir xil sabab yozishning
+ * ma'nosi yo'q — log ham, audit jurnali ham shishadi. Shuning uchun
+ * sabablar takrorsiz yig'iladi va audit `meta` siga qo'shiladi: admin
+ * jurnalda "nega yozilmadi" degan savolga javob ko'radi.
+ */
+const MAX_FAILURE_REASONS = 5;
+
+function collectReason(reasons: string[], reason: string): void {
+  if (reasons.length >= MAX_FAILURE_REASONS) return;
+  if (reasons.includes(reason)) return;
+  reasons.push(reason);
+}
+
 const commitAction = createAction({
   roles: ["ADMIN"],
   schema: studentImportPayloadSchema,
-  handler: async (input): Promise<ImportOutcome> => {
+  handler: async (input, user): Promise<ImportOutcome & { failureReasons: string[] }> => {
     const classMap = await loadClassMap();
+    const failureReasons: string[] = [];
     const outcome: ImportOutcome = {
       created: 0,
       updated: 0,
@@ -318,6 +356,7 @@ const commitAction = createAction({
       const classId = row.className ? classMap.get(normalizeKey(row.className)) : undefined;
       if (row.className && !classId) {
         outcome.failed += 1;
+        collectReason(failureReasons, "sinf topilmadi");
         if (outcome.messages.length < 20) {
           outcome.messages.push(`${row.rowNumber}-qator: sinf topilmadi ("${row.className}").`);
         }
@@ -331,7 +370,17 @@ const commitAction = createAction({
             select: { id: true, guardianId: true },
           });
           if (!existing) {
+            // Klientdan kelgan `existingId` bazada yo'q. Bu oddiy holat ham
+            // bo'lishi mumkin (preview'dan keyin o'quvchi o'chirilgan), lekin
+            // qo'lda yasalgan so'rovning izi ham shunday ko'rinadi — shuning
+            // uchun jim o'tib ketmaymiz.
             outcome.failed += 1;
+            collectReason(failureReasons, "yangilanadigan o'quvchi topilmadi");
+            if (outcome.messages.length < 20) {
+              outcome.messages.push(
+                `${row.rowNumber}-qator: yangilanadigan o'quvchi topilmadi.`
+              );
+            }
             continue;
           }
 
@@ -378,8 +427,27 @@ const commitAction = createAction({
           });
           outcome.created += 1;
         }
-      } catch {
+      } catch (error) {
         outcome.failed += 1;
+
+        /**
+         * ILGARI SHU YERDA `catch {}` TURARDI — xato izsiz yo'qolardi.
+         *
+         * `describeErrorSafely` xato matnidan email, telefon, bcrypt xeshi
+         * va ulanish satrini olib tashlaydi — ya'ni sabab saqlanadi, lekin
+         * maxfiy qiymat log'ga (va audit jurnaliga) tushmaydi.
+         *
+         * Qator raqami ataylab `logError` ga berilmaydi — u foydalanuvchi
+         * faylidan keladi; audit `meta` sida umumiy hisob yetarli.
+         */
+        const reason = describeErrorSafely(error);
+        collectReason(failureReasons, reason);
+        logError("import:student:commit", error, {
+          stage: "write",
+          userId: user.id,
+          mode: input.mode,
+        });
+
         if (outcome.messages.length < 20) {
           outcome.messages.push(`${row.rowNumber}-qator: yozib bo'lmadi.`);
         }
@@ -387,7 +455,7 @@ const commitAction = createAction({
     }
 
     revalidatePath("/students");
-    return outcome;
+    return { ...outcome, failureReasons };
   },
   audit: {
     action: "CREATE",
@@ -400,6 +468,8 @@ const commitAction = createAction({
       updated: result.updated,
       skipped: result.skipped,
       failed: result.failed,
+      // Nega yozilmadi — endi jurnalda ko'rinadi (tozalangan matn).
+      failureReasons: result.failureReasons,
     }),
   },
 });
@@ -407,5 +477,8 @@ const commitAction = createAction({
 export async function commitStudentImport(payload: unknown): Promise<StudentCommitState> {
   const result = await commitAction(payload);
   if (!result.ok) return { ok: false, error: result.error };
-  return { ok: true, data: result.data };
+
+  // `failureReasons` faqat server jurnali uchun — interfeysga chiqmaydi.
+  const { failureReasons: _unused, ...outcome } = result.data;
+  return { ok: true, data: outcome };
 }
