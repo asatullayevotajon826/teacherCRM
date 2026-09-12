@@ -11,7 +11,12 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
-import { assignStudents, deleteClass, removeStudent } from "../actions";
+import {
+  assignStudents,
+  deleteClass,
+  moveStudents,
+  removeStudent,
+} from "../actions";
 
 const DAYS = [1, 2, 3, 4, 5, 6];
 
@@ -73,6 +78,46 @@ export default async function ClassDetailPage({
       })
     : [];
 
+  /**
+   * KO'CHIRISH ro'yxati — boshqa sinfdagi faol o'quvchilar.
+   *
+   * Joriy sinf nomi ham olinadi: admin kimni qaysi sinfdan olayotganini
+   * TUGMANI BOSISHDAN OLDIN ko'rishi kerak. Nom ko'rsatilmasa bu amal yana
+   * "jimgina ko'chirish" ga aylanib qolardi.
+   */
+  const otherClassStudents = canWrite
+    ? await db.student.findMany({
+        where: {
+          status: "ACTIVE",
+          classId: { not: null },
+          NOT: { classId: klass.id },
+        },
+        orderBy: [{ lastName: "asc" }, { firstName: "asc" }],
+        select: {
+          id: true,
+          firstName: true,
+          lastName: true,
+          class: { select: { name: true } },
+        },
+        take: 300,
+      })
+    : [];
+
+  // Xato kodlari endi aniq matnga bog'langan. Dinamik kalit (`t(key)`)
+  // ishlatilmadi — kalit nomi kodda ko'rinib turishi kerak.
+  const errorMessage =
+    searchParams.error === "assign"
+      ? t("assignFailed")
+      : searchParams.error === "assignBlocked"
+        ? t("assignBlockedOther")
+        : searchParams.error === "move"
+          ? t("moveFailed")
+          : searchParams.error === "moveBlocked"
+            ? t("moveNothing")
+            : searchParams.error === "inUse"
+              ? t("deleteBlocked")
+              : undefined;
+
   const lessons = [...klass.lessons].sort((a, b) => {
     if (a.dayOfWeek !== b.dayOfWeek) return a.dayOfWeek - b.dayOfWeek;
     return (a.period?.index ?? 99) - (b.period?.index ?? 99);
@@ -110,9 +155,9 @@ export default async function ClassDetailPage({
         </div>
       </div>
 
-      {searchParams.error ? (
+      {errorMessage ? (
         <p className="rounded-md border border-destructive/40 bg-destructive/10 px-4 py-3 text-sm text-destructive">
-          {searchParams.error === "assign" ? t("assignFailed") : t("deleteBlocked")}
+          {errorMessage}
         </p>
       ) : null}
 
@@ -252,6 +297,38 @@ export default async function ClassDetailPage({
                     ))}
                   </select>
                   <Button type="submit">{t("addStudentsAction")}</Button>
+                </form>
+              )}
+            </div>
+          ) : null}
+
+          {canWrite ? (
+            <div className="space-y-2 border-t pt-4">
+              <p className="text-sm font-medium">{t("moveStudents")}</p>
+              <p className="text-sm text-muted-foreground">{t("moveStudentsHint")}</p>
+              {otherClassStudents.length === 0 ? (
+                <p className="text-sm text-muted-foreground">
+                  {t("noOtherClassStudents")}
+                </p>
+              ) : (
+                <form action={moveStudents} className="space-y-3">
+                  <input type="hidden" name="classId" value={klass.id} />
+                  <select
+                    name="studentIds"
+                    multiple
+                    size={Math.min(8, otherClassStudents.length)}
+                    className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                  >
+                    {otherClassStudents.map((student) => (
+                      <option key={student.id} value={student.id}>
+                        {student.lastName} {student.firstName}
+                        {student.class ? ` — ${student.class.name}` : ""}
+                      </option>
+                    ))}
+                  </select>
+                  <Button type="submit" variant="outline">
+                    {t("moveStudentsAction")}
+                  </Button>
                 </form>
               )}
             </div>
