@@ -1,10 +1,11 @@
 import { db } from "./db";
 import { logError } from "./logger";
 import type { RateRule } from "./rate-limit-core";
+import { estimateCount, windowsFor } from "./rate-limit-window";
 
 /**
- * DOIMIY SO'ROV CHEKLOVI — BAZA ORQALI (PR G4a, G4b)
- * ==================================================
+ * DOIMIY SO'ROV CHEKLOVI — BAZA ORQALI (PR G4a, G4b, G4c)
+ * =======================================================
  *
  * TOPILGAN NUQSON
  * ---------------
@@ -24,23 +25,14 @@ import type { RateRule } from "./rate-limit-core";
  *
  * Endi hisob PostgreSQL da — barcha jarayon va instansiya uchun BITTA.
  *
- * ALGORITM: SILJIYDIGAN OYNA (ikki katakchali)
- * --------------------------------------------
- * Eng sodda yechim — "qat'iy oyna" (fixed window): har daqiqa uchun bitta
- * hisoblagich. Uning mashhur kamchiligi bor: chegara 40 bo'lsa, hujumchi
- * 12:00:59 da 40 ta va 12:01:00 da yana 40 ta so'rov yuborib, BIR SONIYA
- * ichida 80 ta so'rov o'tkazadi. Ya'ni chegara amalda ikki barobar
- * bo'shashadi — bu haqiqiy teshik, chetlab o'tish usuli hammaga ma'lum.
- *
- * Shuning uchun ikkita katakcha o'qiladi: joriy oyna va undan oldingisi.
- * Oldingi oyna hisobi u qancha "chiqib ketganiga" qarab vaznlanadi:
- *
- *   taxminiy = joriy + oldingi * (1 - o'tgan_vaqt / oyna)
- *
- * Masalan yangi oyna boshlanganiga 15 soniya bo'lgan bo'lsa, oldingi
- * oynaning 75% i hamon hisobga olinadi. Natijada oyna chegarasidagi
- * portlash to'siladi, lekin bazaga qo'shimcha yuk tushmaydi: ikkala
- * qiymat BITTA so'rovda olinadi.
+ * ALGORITM va KALIT MANTIG'I QAYERDA (PR G4c da ajratildi)
+ * --------------------------------------------------------
+ * Oyna matematikasi `rate-limit-window.ts` da, kalit yasash
+ * `rate-limit-keys.ts` da. Ular bazaga bog'liq emas, shuning uchun
+ * `tests/lib/rate-limit.test.ts` bilan qulflangan. Sabab: bu mantiqdagi
+ * xato JIMGINA ketadi — ilova ishlaydi, log toza, faqat himoya yo'q.
+ * Prisma bilan bir faylda turganda uni test qilish uchun haqiqiy baza
+ * kerak bo'lardi va amalda hech qachon tekshirilmasdi.
  *
  * ATOMARLIK (musobaqa holati yo'q)
  * --------------------------------
@@ -71,8 +63,8 @@ import type { RateRule } from "./rate-limit-core";
  * yozilmaydi:
  *   - Server Action / import kaliti: `action:<userId>:<ip>` — id va IP;
  *   - Login kaliti: `login:<sha256>` — email/telefon XESHLANADI
- *     (`rate-limit.ts`), aks holda bu jadval urinilgan email va telefon
- *     raqamlari ro'yxatiga aylanardi.
+ *     (`rate-limit-keys.ts`), aks holda bu jadval urinilgan email va
+ *     telefon raqamlari ro'yxatiga aylanardi.
  * Shuningdek:
  *   - qatorlar UZOQ TURMAYDI: eski oynalar avtomatik o'chiriladi (pastda);
  *   - jadvalga parol, matn yoki erkin kiritma yozilmaydi;
@@ -100,30 +92,6 @@ const MIN_CLEANUP_AGE_MS = 60 * 60 * 1000;
 let callsSinceCleanup = 0;
 
 type CountRow = { cur: number | null; prev: number | null };
-
-type WindowInfo = {
-  /** Joriy oyna boshi. */
-  current: Date;
-  /** Oldingi oyna boshi. */
-  previous: Date;
-  /** Oldingi oyna hisobining hali "chiqib ketmagan" ulushi (0..1). */
-  previousWeight: number;
-};
-
-/**
- * Oyna chegaralarini hisoblaydi. Bitta joyda turadi, chunki o'qish va
- * yozish AYNAN bir xil oyna ustida ishlashi shart — aks holda yozilgan
- * urinish boshqa katakchaga tushib, hisobdan chetda qolardi.
- */
-function windowsFor(windowMs: number): WindowInfo {
-  const now = Date.now();
-  const startMs = Math.floor(now / windowMs) * windowMs;
-  return {
-    current: new Date(startMs),
-    previous: new Date(startMs - windowMs),
-    previousWeight: Math.max(0, 1 - (now - startMs) / windowMs),
-  };
-}
 
 /**
  * Eskirgan hisoblagich qatorlarini o'chiradi.
@@ -196,7 +164,7 @@ export async function consumeDb(key: string, rule: RateRule): Promise<boolean> {
 
   await maybeCleanup(rule.windowMs);
 
-  return currentCount + previousCount * previousWeight <= rule.limit;
+  return estimateCount(currentCount, previousCount, previousWeight) <= rule.limit;
 }
 
 /**
@@ -239,7 +207,7 @@ export async function countRecentDb(
     const currentCount = Number(rows[0]?.cur ?? 0);
     const previousCount = Number(rows[0]?.prev ?? 0);
 
-    return currentCount + previousCount * previousWeight;
+    return estimateCount(currentCount, previousCount, previousWeight);
   } catch (error) {
     logError("rate-limit-db", error, { stage: "count", windowMs });
     return null;
