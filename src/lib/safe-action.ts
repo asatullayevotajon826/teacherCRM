@@ -3,7 +3,7 @@ import { z } from "zod";
 import { requireAuth, requireRole, type SessionUser } from "./auth-guard";
 import { logAudit, type AuditAction } from "./audit";
 import { logError } from "./logger";
-import { consume } from "./rate-limit-core";
+import { consumeDb } from "./rate-limit-db";
 import { getRequestIp } from "./rate-limit";
 
 /**
@@ -72,9 +72,17 @@ export type ActionResult<T = void> = ActionOk<T> | ActionErr;
  * o'qituvchi bir sinfni bir marta saqlaydi. Daqiqada 40 ta yozish amali
  * odam uchun yetarlidan ko'p, skript uchun esa juda kam.
  *
- * ESLATMA (bitta jarayon chegarasi): hisoblagich xotirada turadi. Bir
- * nechta instansiyada ishlaganda umumiy hisob kerak (Redis) — buni
- * `docs/07-xavfsizlik.md` da ma'lum cheklov sifatida yozib qo'yamiz.
+ * HISOB QAYERDA (PR G4a da o'zgardi)
+ * ----------------------------------
+ * Ilgari hisoblagich shu server jarayonining XOTIRASIDA edi — qayta ishga
+ * tushirish uni nolga qaytarardi va bir nechta instansiyada umumiy
+ * bo'lmasdi. Endi `consumeDb` orqali PostgreSQL da: barcha jarayon uchun
+ * bitta hisob, siljiydigan oyna bilan (oyna chegarasidagi ikki barobar
+ * portlash ham to'sildi). Tafsilot: `rate-limit-db.ts`.
+ *
+ * Nosozlikda cheklov YOPILADI (fail-closed): baza javob bermasa amal rad
+ * etiladi. Sabab — aks holda bazani band qilish cheklovni o'chirish yo'li
+ * bo'lib qolardi.
  */
 const ACTION_RULE = { limit: 40, windowMs: 60_000 };
 
@@ -209,9 +217,14 @@ export function createAction<TSchema extends z.ZodTypeAny, TResult>(
     // 2-qatlam: so'rov cheklovi. Rol tekshiruvidan KEYIN — kalitda
     // foydalanuvchi ID si bo'lishi kerak; kirmagan so'rov esa yuqorida
     // allaqachon to'xtatilgan.
+    //
+    // PR G4a: hisob bazada (`consumeDb`), shuning uchun `await`.
     const ip = await getRequestIp();
     if (
-      !consume(`action:${user.id}:${ip}`, options.rateLimit ?? ACTION_RULE)
+      !(await consumeDb(
+        `action:${user.id}:${ip}`,
+        options.rateLimit ?? ACTION_RULE
+      ))
     ) {
       // Cheklovga urilish — xato emas, lekin XAVFSIZLIK SIGNALI.
       // Oddiy foydalanuvchi daqiqada 40 ta yozish amalini bajarmaydi;
