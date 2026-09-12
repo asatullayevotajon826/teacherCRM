@@ -3,8 +3,8 @@ import { logError } from "./logger";
 import type { RateRule } from "./rate-limit-core";
 
 /**
- * DOIMIY SO'ROV CHEKLOVI — BAZA ORQALI (PR G4a)
- * =============================================
+ * DOIMIY SO'ROV CHEKLOVI — BAZA ORQALI (PR G4a, G4b)
+ * ==================================================
  *
  * TOPILGAN NUQSON
  * ---------------
@@ -53,22 +53,31 @@ import type { RateRule } from "./rate-limit-core";
  *
  * FAIL-CLOSED (nosozlikda YOPILADI)
  * ---------------------------------
- * SQL xato bersa `false` qaytadi, ya'ni so'rov RAD ETILADI. Buni ataylab
- * shunday qildik: "xato bo'lsa o'tkazib yuborish" (fail-open) hujumchiga
- * tayyor retsept beradi — bazani band qilib cheklovni o'chirish. Baza
- * javob bermayotgan paytda ilovaning o'zi ham ishlamaydi (hamma sahifa
- * Prisma ga tayanadi), shuning uchun yopilish qo'shimcha zarar keltirmaydi.
- * Xato albatta `logError` bilan qayd etiladi — jimgina yopilib qolmaydi.
+ * SQL xato bersa `consumeDb` `false` qaytaradi, ya'ni so'rov RAD ETILADI.
+ * Buni ataylab shunday qildik: "xato bo'lsa o'tkazib yuborish"
+ * (fail-open) hujumchiga tayyor retsept beradi — bazani band qilib
+ * cheklovni o'chirish. Baza javob bermayotgan paytda ilovaning o'zi ham
+ * ishlamaydi (hamma sahifa Prisma ga tayanadi), shuning uchun yopilish
+ * qo'shimcha zarar keltirmaydi. Xato albatta `logError` bilan qayd
+ * etiladi — jimgina yopilib qolmaydi.
+ *
+ * O'QISH FUNKSIYASI (`countRecentDb`) esa son emas, XATO holatida `null`
+ * qaytaradi — chaqiruvchi "nol" bilan "bilmadim" ni farqlashi kerak.
+ * Login cheklovi buni fail-closed deb talqin qiladi (`rate-limit.ts`).
  *
  * MAXFIYLIK
  * ---------
- * Jadvalda `key` turadi, u `action:<userId>:<ip>` ko'rinishida. Ya'ni
- * IP manzil — shaxsiy ma'lumot — bazada saqlanadi. Shuning uchun:
+ * Jadvalda `key` turadi. Unga HECH QACHON ochiq shaxsiy ma'lumot
+ * yozilmaydi:
+ *   - Server Action / import kaliti: `action:<userId>:<ip>` — id va IP;
+ *   - Login kaliti: `login:<sha256>` — email/telefon XESHLANADI
+ *     (`rate-limit.ts`), aks holda bu jadval urinilgan email va telefon
+ *     raqamlari ro'yxatiga aylanardi.
+ * Shuningdek:
  *   - qatorlar UZOQ TURMAYDI: eski oynalar avtomatik o'chiriladi (pastda);
- *   - jadvalga hech qanday parol, email, telefon yoki matn yozilmaydi;
- *   - `key` ni faqat kod yasaydi, foydalanuvchi kiritgan matn unga
- *     qo'shilmaydi (aks holda jadvalga o'zboshimcha ma'lumot kiritish
- *     yo'li ochilardi);
+ *   - jadvalga parol, matn yoki erkin kiritma yozilmaydi;
+ *   - `key` ni faqat kod yasaydi, foydalanuvchi matni unga to'g'ridan
+ *     qo'shilmaydi;
  *   - log'ga `key` YOZILMAYDI — faqat chegara va oyna uzunligi.
  *
  * TOZALASH
@@ -91,6 +100,30 @@ const MIN_CLEANUP_AGE_MS = 60 * 60 * 1000;
 let callsSinceCleanup = 0;
 
 type CountRow = { cur: number | null; prev: number | null };
+
+type WindowInfo = {
+  /** Joriy oyna boshi. */
+  current: Date;
+  /** Oldingi oyna boshi. */
+  previous: Date;
+  /** Oldingi oyna hisobining hali "chiqib ketmagan" ulushi (0..1). */
+  previousWeight: number;
+};
+
+/**
+ * Oyna chegaralarini hisoblaydi. Bitta joyda turadi, chunki o'qish va
+ * yozish AYNAN bir xil oyna ustida ishlashi shart — aks holda yozilgan
+ * urinish boshqa katakchaga tushib, hisobdan chetda qolardi.
+ */
+function windowsFor(windowMs: number): WindowInfo {
+  const now = Date.now();
+  const startMs = Math.floor(now / windowMs) * windowMs;
+  return {
+    current: new Date(startMs),
+    previous: new Date(startMs - windowMs),
+    previousWeight: Math.max(0, 1 - (now - startMs) / windowMs),
+  };
+}
 
 /**
  * Eskirgan hisoblagich qatorlarini o'chiradi.
@@ -122,13 +155,10 @@ async function maybeCleanup(windowMs: number): Promise<void> {
  *          hisoblagich ishlamadi (fail-closed).
  */
 export async function consumeDb(key: string, rule: RateRule): Promise<boolean> {
-  const now = Date.now();
-  const windowStartMs = Math.floor(now / rule.windowMs) * rule.windowMs;
-  const windowStart = new Date(windowStartMs);
-  const prevWindowStart = new Date(windowStartMs - rule.windowMs);
+  const { current, previous, previousWeight } = windowsFor(rule.windowMs);
 
-  let current = 0;
-  let previous = 0;
+  let currentCount = 0;
+  let previousCount = 0;
 
   try {
     // Joriy katakchani atomar oshiramiz VA oldingi katakchani o'qiymiz —
@@ -136,7 +166,7 @@ export async function consumeDb(key: string, rule: RateRule): Promise<boolean> {
     const rows = await db.$queryRaw<CountRow[]>`
       WITH upserted AS (
         INSERT INTO "RateHit" ("key", "windowStart", "count")
-        VALUES (${key}, ${windowStart}, 1)
+        VALUES (${key}, ${current}, 1)
         ON CONFLICT ("key", "windowStart")
         DO UPDATE SET "count" = "RateHit"."count" + 1
         RETURNING "count"
@@ -146,14 +176,14 @@ export async function consumeDb(key: string, rule: RateRule): Promise<boolean> {
         COALESCE(
           (
             SELECT "count" FROM "RateHit"
-            WHERE "key" = ${key} AND "windowStart" = ${prevWindowStart}
+            WHERE "key" = ${key} AND "windowStart" = ${previous}
           ),
           0
         ) AS "prev"
     `;
 
-    current = Number(rows[0]?.cur ?? 0);
-    previous = Number(rows[0]?.prev ?? 0);
+    currentCount = Number(rows[0]?.cur ?? 0);
+    previousCount = Number(rows[0]?.prev ?? 0);
   } catch (error) {
     // Hisoblagich ishlamasa — YOPAMIZ. Sababi yuqoridagi izohda.
     logError("rate-limit-db", error, {
@@ -166,10 +196,94 @@ export async function consumeDb(key: string, rule: RateRule): Promise<boolean> {
 
   await maybeCleanup(rule.windowMs);
 
-  // Siljiydigan oyna: oldingi oynaning hali "chiqib ketmagan" ulushi.
-  const elapsed = now - windowStartMs;
-  const previousWeight = Math.max(0, 1 - elapsed / rule.windowMs);
-  const estimated = current + previous * previousWeight;
+  return currentCount + previousCount * previousWeight <= rule.limit;
+}
 
-  return estimated <= rule.limit;
+/**
+ * Oyna ichidagi urinishlar sonini O'QIYDI — hisobni oshirmaydi (PR G4b).
+ *
+ * Login cheklovi uchun kerak: u yerda tekshirish va yozish AJRALGAN.
+ * Faqat MUVAFFAQIYATSIZ urinish hisoblanadi, muvaffaqiyatli kirish esa
+ * hisoblagichni oshirmasligi kerak — aks holda ko'p ishlaydigan admin
+ * o'zini o'zi bloklab qo'yardi.
+ *
+ * @returns taxminiy son (siljiydigan oyna bo'yicha), yoki `null` —
+ *          hisoblagichni o'qib bo'lmadi. `null` ni "nol" deb talqin
+ *          qilish TAQIQLANADI: bu cheklovni jimgina o'chirib qo'yardi.
+ */
+export async function countRecentDb(
+  key: string,
+  windowMs: number
+): Promise<number | null> {
+  const { current, previous, previousWeight } = windowsFor(windowMs);
+
+  try {
+    const rows = await db.$queryRaw<CountRow[]>`
+      SELECT
+        COALESCE(
+          (
+            SELECT "count" FROM "RateHit"
+            WHERE "key" = ${key} AND "windowStart" = ${current}
+          ),
+          0
+        ) AS "cur",
+        COALESCE(
+          (
+            SELECT "count" FROM "RateHit"
+            WHERE "key" = ${key} AND "windowStart" = ${previous}
+          ),
+          0
+        ) AS "prev"
+    `;
+
+    const currentCount = Number(rows[0]?.cur ?? 0);
+    const previousCount = Number(rows[0]?.prev ?? 0);
+
+    return currentCount + previousCount * previousWeight;
+  } catch (error) {
+    logError("rate-limit-db", error, { stage: "count", windowMs });
+    return null;
+  }
+}
+
+/**
+ * Bitta urinishni yozib qo'yadi (PR G4b).
+ *
+ * Xato bo'lsa qayd etiladi, lekin chaqiruvchiga uzatilmaydi: bu funksiya
+ * login javobini kechiktirmasligi yoki buzmasligi kerak. Yozib
+ * bo'lmagan urinish hisobga tushmaydi — shu holat PR tavsifida ochiq
+ * yozilgan.
+ */
+export async function recordDb(key: string, windowMs: number): Promise<void> {
+  const { current } = windowsFor(windowMs);
+
+  try {
+    await db.$executeRaw`
+      INSERT INTO "RateHit" ("key", "windowStart", "count")
+      VALUES (${key}, ${current}, 1)
+      ON CONFLICT ("key", "windowStart")
+      DO UPDATE SET "count" = "RateHit"."count" + 1
+    `;
+  } catch (error) {
+    logError("rate-limit-db", error, { stage: "record", windowMs });
+    return;
+  }
+
+  await maybeCleanup(windowMs);
+}
+
+/**
+ * Kalit hisoblagichini butunlay tozalaydi (PR G4b).
+ *
+ * Muvaffaqiyatli kirishdan keyin shu login hisobini nolga qaytarish
+ * uchun. IP hisoblagichi ATAYLAB tozalanmaydi: aks holda hujumchi bitta
+ * o'z hisobiga muvaffaqiyatli kirib, IP chegarasini har safar
+ * "yuvib tashlashi" mumkin bo'lardi.
+ */
+export async function resetDbKey(key: string): Promise<void> {
+  try {
+    await db.$executeRaw`DELETE FROM "RateHit" WHERE "key" = ${key}`;
+  } catch (error) {
+    logError("rate-limit-db", error, { stage: "reset" });
+  }
 }
