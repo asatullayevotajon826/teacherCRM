@@ -5,6 +5,8 @@ import { revalidatePath } from "next/cache";
 import { db } from "@/lib/db";
 import { requireAdmin } from "@/lib/auth-guard";
 import { createAction } from "@/lib/safe-action";
+import { describeErrorSafely } from "@/lib/audit";
+import { logError } from "@/lib/logger";
 import { checkImportHeaders } from "@/lib/import-guards";
 import { PREVIEW_RATE_LIMIT_MESSAGE, allowImportPreview } from "@/lib/import-preview-limit";
 import { MIN_PASSWORD_LENGTH } from "@/lib/password";
@@ -52,6 +54,13 @@ import {
  * matn, yoki parol siyosatini chetlab o'tgan "aaaaaaaa" kabi parol
  * yozdirish mumkin edi. Endi `preview` dagi qoidalar yozishdan oldin
  * SERVERDA qaytadan qo'llanadi.
+ *
+ * XATOLARNI QAYD ETISH (PR G3): hisob yaratish eng nozik amal — shuning
+ * uchun bu yerdagi muvaffaqiyatsizliklar ayniqsa muhim. Ilgari `catch`
+ * faqat `failed` ni oshirib, sababni yo'q qilardi: ya'ni kimdir band
+ * login bilan yuzlab hisob yaratishga urinsa ham iz qolmasdi. Endi sabab
+ * tozalangan ko'rinishda serverda va audit jurnalida saqlanadi — parol
+ * hamon hech qayerga yozilmaydi.
  */
 
 const BCRYPT_ROUNDS = 10;
@@ -124,6 +133,10 @@ export async function previewTeacherImport(
   // fayl bilan ishlamaydi), shuning uchun cheklov ochiq qolgan edi —
   // sababi `import-preview-limit.ts` da batafsil yozilgan.
   if (!(await allowImportPreview(user.id))) {
+    logError("import:teacher:preview", new Error("preview cheklovi ishga tushdi"), {
+      stage: "rateLimit",
+      userId: user.id,
+    });
     return { ok: false, error: PREVIEW_RATE_LIMIT_MESSAGE };
   }
 
@@ -141,7 +154,13 @@ export async function previewTeacherImport(
   let parsed;
   try {
     parsed = parseExcel(await file.arrayBuffer());
-  } catch {
+  } catch (error) {
+    // Fayl nomi log'ga yozilmaydi (foydalanuvchi matni) — faqat hajmi.
+    logError("import:teacher:preview", error, {
+      stage: "parse",
+      userId: user.id,
+      fileSize: file.size,
+    });
     return { ok: false, error: "Faylni o'qib bo'lmadi. U Excel fayl ekanini tekshiring." };
   }
 
@@ -290,11 +309,28 @@ export async function previewTeacherImport(
 /* 2-qadam: yozish                                                     */
 /* ------------------------------------------------------------------ */
 
+/**
+ * Takrorlanmaydigan sabablar ro'yxati (eng ko'pi 5 ta) — o'quvchi
+ * importidagi mantiqning aynan o'zi. 500 ta bir xil sababni yozish
+ * log'ni ham, audit jurnalini ham foydasiz qilardi.
+ */
+const MAX_FAILURE_REASONS = 5;
+
+function collectReason(reasons: string[], reason: string): void {
+  if (reasons.length >= MAX_FAILURE_REASONS) return;
+  if (reasons.includes(reason)) return;
+  reasons.push(reason);
+}
+
 const commitAction = createAction({
   roles: ["ADMIN"],
   schema: teacherImportPayloadSchema,
-  handler: async (input): Promise<ImportOutcome> => {
+  handler: async (
+    input,
+    user
+  ): Promise<ImportOutcome & { failureReasons: string[] }> => {
     const subjectMap = await loadSubjectMap();
+    const failureReasons: string[] = [];
     const outcome: ImportOutcome = {
       created: 0,
       updated: 0,
@@ -321,6 +357,7 @@ const commitAction = createAction({
 
       if (row.existingId && !validTeachers.has(row.existingId)) {
         outcome.failed += 1;
+        collectReason(failureReasons, "yangilanadigan o'qituvchi topilmadi");
         addMessage(`${row.rowNumber}-qator: yangilanadigan o'qituvchi topilmadi.`);
         continue;
       }
@@ -337,6 +374,7 @@ const commitAction = createAction({
       }
       if (missingSubject) {
         outcome.failed += 1;
+        collectReason(failureReasons, "fan topilmadi");
         addMessage(`${row.rowNumber}-qator: fan topilmadi ("${missingSubject}").`);
         continue;
       }
@@ -350,6 +388,7 @@ const commitAction = createAction({
       const email = normalizeCommitEmail(row.email);
       if (email !== null && !isValidCommitEmail(email)) {
         outcome.failed += 1;
+        collectReason(failureReasons, "email formati noto'g'ri");
         addMessage(`${row.rowNumber}-qator: email formati noto'g'ri.`);
         continue;
       }
@@ -357,12 +396,14 @@ const commitAction = createAction({
       const phone = normalizeCommitPhone(row.phone);
       if (row.phone && row.phone.trim() !== "" && phone === null) {
         outcome.failed += 1;
+        collectReason(failureReasons, "telefon raqami noto'g'ri");
         addMessage(`${row.rowNumber}-qator: telefon raqami noto'g'ri.`);
         continue;
       }
 
       if (!email && !phone) {
         outcome.failed += 1;
+        collectReason(failureReasons, "login (email/telefon) yo'q");
         addMessage(`${row.rowNumber}-qator: email yoki telefon yo'q.`);
         continue;
       }
@@ -372,6 +413,17 @@ const commitAction = createAction({
       // aks holda siyosat o'zgarganda bu xabar eskirib qolardi.
       if (row.password !== undefined && !isStrongInitialPassword(row.password)) {
         outcome.failed += 1;
+
+        // DIQQAT: bu yerga parolning O'ZI ham, uning uzunligi ham
+        // yozilmaydi — uzunlik ham taxmin maydonini qisqartiradigan
+        // ma'lumot. Faqat "siyosatga mos emas" degan fakt qayd etiladi.
+        collectReason(failureReasons, "parol siyosatiga mos emas");
+        logError(
+          "import:teacher:commit",
+          new Error("parol siyosatiga mos kelmaydigan qator rad etildi"),
+          { stage: "passwordPolicy", userId: user.id }
+        );
+
         addMessage(
           `${row.rowNumber}-qator: parol siyosatiga mos emas (kamida ${MIN_PASSWORD_LENGTH} belgi, harf va raqam, oson topiladigan parol bo'lmasligi kerak).`
         );
@@ -386,6 +438,8 @@ const commitAction = createAction({
           });
           if (!existing) {
             outcome.failed += 1;
+            collectReason(failureReasons, "yangilanadigan o'qituvchi topilmadi");
+            addMessage(`${row.rowNumber}-qator: yangilanadigan o'qituvchi topilmadi.`);
             continue;
           }
 
@@ -438,8 +492,32 @@ const commitAction = createAction({
           });
           outcome.created += 1;
         }
-      } catch {
+      } catch (error) {
         outcome.failed += 1;
+
+        /**
+         * ILGARI SHU YERDA `catch {}` TURARDI.
+         *
+         * Bu eng muhim jim joy edi: hisob yaratish muvaffaqiyatsizligi
+         * (band login, unique buzilishi, tranzaksiya xatosi) hech qayerda
+         * qayd etilmasdi. Ya'ni kimdir import orqali mavjud loginlarni
+         * "sinab ko'rsa" — qaysi email bazada bor, qaysi yo'q — server
+         * bu urinishlarni umuman ko'rmasdi.
+         *
+         * `describeErrorSafely` xato matnidan email, telefon va bcrypt
+         * xeshini olib tashlaydi, shuning uchun sabab saqlanadi, maxfiy
+         * qiymat esa tushmaydi. Parol hech qanday holatda log'ga yoki
+         * audit jurnaliga yozilmaydi.
+         */
+        const reason = describeErrorSafely(error);
+        collectReason(failureReasons, reason);
+        logError("import:teacher:commit", error, {
+          stage: "write",
+          userId: user.id,
+          mode: input.mode,
+          isUpdate: Boolean(row.existingId),
+        });
+
         addMessage(
           `${row.rowNumber}-qator: yozib bo'lmadi (login band bo'lishi mumkin).`
         );
@@ -447,7 +525,7 @@ const commitAction = createAction({
     }
 
     revalidatePath("/teachers");
-    return outcome;
+    return { ...outcome, failureReasons };
   },
   audit: {
     action: "CREATE",
@@ -460,6 +538,8 @@ const commitAction = createAction({
       updated: result.updated,
       skipped: result.skipped,
       failed: result.failed,
+      // Nega yozilmadi — endi jurnalda ko'rinadi (tozalangan matn).
+      failureReasons: result.failureReasons,
     }),
   },
 });
@@ -467,5 +547,8 @@ const commitAction = createAction({
 export async function commitTeacherImport(payload: unknown): Promise<TeacherCommitState> {
   const result = await commitAction(payload);
   if (!result.ok) return { ok: false, error: result.error };
-  return { ok: true, data: result.data };
+
+  // `failureReasons` faqat server jurnali uchun — interfeysga chiqmaydi.
+  const { failureReasons: _unused, ...outcome } = result.data;
+  return { ok: true, data: outcome };
 }
