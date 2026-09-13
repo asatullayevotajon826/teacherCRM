@@ -2,6 +2,7 @@ import type { Role } from "@prisma/client";
 import { auth } from "@/auth";
 import { hasRole } from "@/lib/rbac";
 import { logError } from "@/lib/logger";
+import { logPermissionDenied } from "@/lib/audit-denied";
 import { consume, ipFromHeaders } from "@/lib/rate-limit-core";
 
 /**
@@ -30,6 +31,20 @@ import { consume, ipFromHeaders } from "@/lib/rate-limit-core";
  * Javoblar ATAYLAB quruq: xato matni ichki tuzilma haqida hech nima aytmaydi
  * ("bunday o'quvchi yo'q" va "ruxsatingiz yo'q" farqlanmaydi — enumeration
  * hujumining oldi olinadi).
+ *
+ * AUDIT (H4b)
+ * -----------
+ * 2-, 3- va 4-qadamdagi rad etishlar `AuditLog` ga `PERMISSION_DENIED`
+ * bilan yoziladi. Ilgari ular hech qanday doimiy iz qoldirmasdi: API ni
+ * skript bilan "titib ko'rish" urinishi normal ishlashdan farq qilmasdi.
+ *
+ * 401 (sessiyasiz so'rov) ATAYLAB yozilmaydi: foydalanuvchi noma'lum,
+ * ya'ni yozuvda foydali ma'lumot yo'q, lekin autentifikatsiyasiz hujumchi
+ * uchun `AuditLog` ni cheksiz to'ldirish yo'li paydo bo'lardi. Bu holat
+ * cheklov (`consume`) bilan to'siladi.
+ *
+ * Javob matni, status kodi va ketma-ketlik O'ZGARMADI — audit faqat
+ * qo'shimcha yozuv, qaror emas.
  */
 
 /** Bitta foydalanuvchi API'ni bombardimon qila olmasligi uchun. */
@@ -78,15 +93,43 @@ export function createRouteHandler<TParams extends Record<string, string>>(optio
     }
 
     if (user.mustChangePassword) {
+      // Jurnalga yo'l (`pathname`) ham yozilmaydi: u foydalanuvchi
+      // boshqaradigan qiymat va jurnalga o'zboshimcha matn kiritish
+      // yo'lini ochardi. Yo'l kerak bo'lsa `logError` orqali serverda
+      // qoladi (pastdagi `catch`).
+      await logPermissionDenied({
+        userId: user.id,
+        reason: "mustChangePassword",
+        entity: "Route",
+        meta: { role: user.role },
+      });
       return jsonError(403, "Avval parolni almashtiring.");
     }
 
     if (!hasRole(user.role, options.roles)) {
+      await logPermissionDenied({
+        userId: user.id,
+        reason: "role",
+        entity: "Route",
+        meta: { role: user.role, allowedRoles: options.roles },
+      });
       return jsonError(403, "Ruxsat yo'q.");
     }
 
     const ip = ipFromHeaders(request.headers);
     if (!consume(`route:${user.id}:${ip}`, ROUTE_RULE)) {
+      // IP jurnalga YOZILMAYDI — shaxsiy ma'lumot, `AuditLog` esa uzoq
+      // saqlanadi va ko'p odam ko'radi.
+      await logPermissionDenied({
+        userId: user.id,
+        reason: "rateLimit",
+        entity: "Route",
+        meta: {
+          role: user.role,
+          limit: ROUTE_RULE.limit,
+          windowMs: ROUTE_RULE.windowMs,
+        },
+      });
       return jsonError(429, "So'rovlar juda ko'p. Birozdan keyin urinib ko'ring.");
     }
 
