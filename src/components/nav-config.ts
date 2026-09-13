@@ -29,32 +29,35 @@ import type { Role } from "@prisma/client";
  * YON MENYU TARKIBI
  * =================
  *
- * `enabled` BAYROG'I (PR H2) — NIMA UCHUN KERAK
- * --------------------------------------------
- * Menyuda 10 ta havola bor edi, lekin ularning sahifasi hali yozilmagan:
+ * `enabled` BAYROG'I — NIMA UCHUN KERAK
+ * ------------------------------------
+ * Menyuda 10 ta havola bor, lekin ularning sahifasi hali yozilmagan:
  * /penalties, /penalty-criteria, /rewards, /reward-criteria, /payments,
  * /reports, /messages, /tests, /users, /ai-assistant.
  *
- * Bosilganda 404 chiqardi. Bu ikki tomondan yomon:
- *   1. Foydalanuvchi "tizim buzuq" deb o'ylaydi;
- *   2. Yo'q sahifa menyuda turgani uchun nima ishlayotgani va nima
- *      ishlamayotgani hujjatsiz qoladi.
+ * TARIX VA HOZIRGI QAROR:
+ *   - Boshida ular oddiy havola edi — bosilganda 404 chiqardi.
+ *   - PR H2 da ular menyudan BUTUNLAY yashirildi.
+ *   - H4f (egasining talabi): ular yana KO'RINADI, lekin BOSILMAYDI.
+ *     Sabab: tizimda qanday bo'limlar bo'lishi rejalashtirilgani ko'rinib
+ *     tursin, lekin ishlamaydigan havola bosilib 404 bermasin.
+ *
+ * Ya'ni `enabled: false` endi "yashirish" emas, "QULFLASH" degani.
  *
  * MUHIM: bu sahifalar O'CHIRILMAYDI va KELAJAKDA YARATILADI. Shu sababli:
- *   - `rbac.ts` dagi `roleAllowedPaths` yozuvlari TEGILMAYDI — ruxsat
- *     jadvali allaqachon to'g'ri va sahifa tayyor bo'lganda darhol ishlaydi;
  *   - `item` ro'yxatidan havola O'CHIRILMAYDI — nomi, manzili va ikonkasi
  *     joyida qoladi;
- *   - faqat KO'RINISHI o'chiriladi.
+ *   - faqat BOSILISHI to'sib qo'yiladi.
  *
  * SAHIFA TAYYOR BO'LGANDA: shu havoladagi `enabled: false` qatorini olib
  * tashlash kifoya. Boshqa hech qayerda o'zgartirish kerak emas.
  *
- * XAVFSIZLIK ESLATMASI: `enabled` — bu QULAYLIK bayrog'i, himoya EMAS.
- * Havolani yashirish sahifani yopmaydi. Haqiqiy himoya uch qatlamda:
- * `middleware.ts` + `rbac.ts` (sahifa darajasi), `auth-guard.ts` (rol) va
- * `scope.ts` (qatorlar doirasi). Yangi sahifa qo'shilganda ularning
- * hammasi to'ldirilishi shart — menyuni ochish o'zi yetarli emas.
+ * XAVFSIZLIK ESLATMASI (o'zgarmadi): `enabled` — bu QULAYLIK bayrog'i,
+ * himoya EMAS. Havolani qulflash sahifani yopmaydi va buni qilishga
+ * urinmaydi ham. Haqiqiy himoya uch qatlamda: `middleware.ts` + `rbac.ts`
+ * (sahifa darajasi), `auth-guard.ts` (rol) va `scope.ts` (qatorlar
+ * doirasi). Yangi sahifa qo'shilganda ularning hammasi to'ldirilishi shart
+ * — menyuni ochish o'zi yetarli emas.
  */
 
 export type NavItem = {
@@ -62,8 +65,9 @@ export type NavItem = {
   href: string;
   icon: LucideIcon;
   /**
-   * Sukut bo'yicha havola ko'rinadi. `false` — sahifa hali yaratilmagani
-   * uchun havola vaqtincha yashirilgan (yuqoridagi izohga qarang).
+   * Sukut bo'yicha havola ishlaydi. `false` — sahifa hali yaratilmagani
+   * uchun havola QULFLANGAN: ko'rinadi, lekin bosilmaydi (yuqoridagi
+   * izohga qarang).
    */
   enabled?: boolean;
 };
@@ -82,7 +86,7 @@ const item = {
   grades: { key: "grades", href: "/grades", icon: BookOpenCheck },
   ranking: { key: "ranking", href: "/ranking", icon: Trophy },
 
-  // --- Sahifasi hali yaratilmagan havolalar (H2 da yashirildi) ---
+  // --- Sahifasi hali yaratilmagan havolalar (H4f da qulflandi) ---
   // 7-bosqichda jarima ball tizimi yozilganda ochiladi.
   penalties: {
     key: "penalties",
@@ -134,7 +138,7 @@ const item = {
     enabled: false,
   },
   users: { key: "users", href: "/users", icon: UserCog, enabled: false },
-  // --- Yashirilgan havolalar tugadi ---
+  // --- Qulflangan havolalar tugadi ---
 
   subjects: { key: "subjects", href: "/subjects", icon: Library },
   academicYears: {
@@ -146,12 +150,18 @@ const item = {
 } satisfies Record<string, NavItem>;
 
 /**
- * To'liq menyu tarkibi — yashirilgan havolalar ham shu yerda turadi.
+ * MENYU TARKIBI — komponentlar SHUNI ishlatadi.
  *
- * Bu ro'yxat "tizim qanday bo'lishi kerak" ni ko'rsatadi, foydalanuvchi
- * ko'radigan holatni emas. Pastda filtrlanadi.
+ * H4f dan oldin bu ro'yxat filtrlanardi (`visibleGroups`) va qulflangan
+ * havolalar butunlay tushib qolardi. Endi filtr YO'Q: ro'yxat to'liq
+ * ko'rsatiladi, `enabled: false` bo'lgan element esa `sidebar.tsx` da
+ * havola sifatida emas, qulflangan qator sifatida chiziladi.
+ *
+ * Filtr olib tashlanganining yon foydasi: bo'sh guruh muammosi ham yo'q
+ * bo'ldi (ilgari buxgalterning "finance" va "system" guruhlari butunlay
+ * bo'shab qolar, shuning uchun maxsus tozalash kerak edi).
  */
-const fullNavGroupsByRole: Record<Role, NavGroup[]> = {
+export const navGroupsByRole: Record<Role, NavGroup[]> = {
   ADMIN: [
     { groupKey: "overview", items: [item.dashboard] },
     {
@@ -228,56 +238,44 @@ const fullNavGroupsByRole: Record<Role, NavGroup[]> = {
   ],
 };
 
-/** Bayroq yo'q bo'lsa havola ko'rinadi — ya'ni faqat `false` yashiradi. */
-function isEnabled(navItem: NavItem): boolean {
+/** Bayroq yo'q bo'lsa havola ishlaydi — ya'ni faqat `false` qulflaydi. */
+export function isNavItemEnabled(navItem: NavItem): boolean {
   return navItem.enabled !== false;
 }
 
 /**
- * Guruhlarni filtrlaydi va BO'SH QOLGAN guruhni butunlay olib tashlaydi.
+ * FAQAT ISHLAYDIGAN havolalar.
  *
- * Bo'sh guruhni qoldirib bo'lmaydi: `sidebar.tsx` har bir guruh uchun
- * yig'iladigan sarlavha chizadi, ya'ni ekranda ichi bo'sh "Moliya" tugmasi
- * paydo bo'lardi. Masalan buxgalter uchun "finance" va "system" guruhlarining
- * hamma havolasi yashirilgan.
+ * Semantika ATAYLAB o'zgartirilmadi: bu ro'yxat H4f dan oldin ham faqat
+ * bosiladigan havolalarni qaytargan. Agar bu yerga qulflangan havolalar
+ * ham qo'shilsa, uni ishlatuvchi kod (masalan navigatsiya tekshiruvi)
+ * ishlamaydigan sahifani ochiq deb hisoblab qolishi mumkin edi.
  */
-function visibleGroups(groups: NavGroup[]): NavGroup[] {
-  return groups
-    .map((group) => ({
-      groupKey: group.groupKey,
-      items: group.items.filter(isEnabled),
-    }))
-    .filter((group) => group.items.length > 0);
-}
-
-/**
- * Komponentlar SHUNI ishlatadi — ya'ni filtr bitta joyda.
- *
- * Shu sababli `sidebar.tsx` va `mobile-nav.tsx` ga tegishga hojat yo'q va
- * kelajakda yangi menyu komponenti qo'shilsa ham yashirilgan havola
- * tasodifan chiqib ketmaydi.
- */
-export const navGroupsByRole: Record<Role, NavGroup[]> = {
-  ADMIN: visibleGroups(fullNavGroupsByRole.ADMIN),
-  TEACHER: visibleGroups(fullNavGroupsByRole.TEACHER),
-  ACCOUNTANT: visibleGroups(fullNavGroupsByRole.ACCOUNTANT),
-  PARENT: visibleGroups(fullNavGroupsByRole.PARENT),
-};
-
 export const navByRole: Record<Role, NavItem[]> = {
-  ADMIN: navGroupsByRole.ADMIN.flatMap((group) => group.items),
-  TEACHER: navGroupsByRole.TEACHER.flatMap((group) => group.items),
-  ACCOUNTANT: navGroupsByRole.ACCOUNTANT.flatMap((group) => group.items),
-  PARENT: navGroupsByRole.PARENT.flatMap((group) => group.items),
+  ADMIN: navGroupsByRole.ADMIN.flatMap((group) =>
+    group.items.filter(isNavItemEnabled)
+  ),
+  TEACHER: navGroupsByRole.TEACHER.flatMap((group) =>
+    group.items.filter(isNavItemEnabled)
+  ),
+  ACCOUNTANT: navGroupsByRole.ACCOUNTANT.flatMap((group) =>
+    group.items.filter(isNavItemEnabled)
+  ),
+  PARENT: navGroupsByRole.PARENT.flatMap((group) =>
+    group.items.filter(isNavItemEnabled)
+  ),
 };
 
 /**
- * Vaqtincha yashirilgan havolalar manzillari.
+ * Qulflangan havolalar manzillari (sahifasi hali yo'q).
  *
- * Test uchun kerak: "menyuda sahifasi yo'q havola qolmadimi?" degan
- * tekshiruv shu ro'yxatga tayanadi. Qo'lda takrorlamaslik uchun `item`
- * ning o'zidan hisoblanadi.
+ * Test uchun kerak: "menyuda sahifasi yo'q havola bosiladigan holda
+ * qolmadimi?" degan tekshiruv shu ro'yxatga tayanadi. Qo'lda
+ * takrorlamaslik uchun `item` ning o'zidan hisoblanadi.
+ *
+ * Nom o'zgartirilmadi (`HIDDEN_NAV_HREFS`), chunki ma'nosi bir xil qoldi:
+ * sahifasi mavjud bo'lmagan havolalar ro'yxati.
  */
 export const HIDDEN_NAV_HREFS: string[] = (Object.values(item) as NavItem[])
-  .filter((navItem) => !isEnabled(navItem))
+  .filter((navItem) => !isNavItemEnabled(navItem))
   .map((navItem) => navItem.href);
