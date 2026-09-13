@@ -4,6 +4,7 @@ import { auth } from "@/auth";
 import { redirect } from "@/i18n/navigation";
 import { db } from "./db";
 import { hasRole } from "./rbac";
+import { logPermissionDenied } from "./audit-denied";
 
 /**
  * SERVER TOMON QOROVULLARI (Punkt 1)
@@ -19,6 +20,11 @@ import { hasRole } from "./rbac";
  * MUHIM: bu qorovullar "qaysi ROLGA ruxsat" degan savolga javob beradi.
  * "Qaysi QATORLARGA ruxsat" degan savol — src/lib/scope.ts (Punkt 2).
  * Ikkisi birga ishlatiladi.
+ *
+ * AUDIT (H4b): rol mos kelmasa, `/forbidden` ga yo'naltirishdan OLDIN
+ * rad etish `AuditLog` ga `PERMISSION_DENIED` bilan yoziladi. Ilgari bu
+ * holat hech qayerda iz qoldirmasdi — ya'ni boshqa rol sahifalarini
+ * ketma-ket "sinab ko'rish" urinishini keyin aniqlashning imkoni yo'q edi.
  */
 
 export type SessionUser = NonNullable<Session["user"]>;
@@ -98,6 +104,10 @@ export async function requireAuth(): Promise<SessionUser> {
  * Berilgan rollardan birini talab qiladi.
  * Rol mos kelmasa — /forbidden (403) sahifasiga yo'naltiradi.
  *
+ * Rad etish `AuditLog` ga yoziladi (H4b). Jurnalga faqat rol nomlari
+ * tushadi — sahifa yo'li, IP va foydalanuvchi kiritmasi ATAYLAB yozilmaydi
+ * (maxfiylik va log injection'dan himoya).
+ *
  * @example
  * await requireRole("ADMIN");
  * await requireRole("ADMIN", "ACCOUNTANT");
@@ -106,6 +116,17 @@ export async function requireRole(...roles: Role[]): Promise<SessionUser> {
   const user = await requireAuth();
 
   if (!hasRole(user.role, roles)) {
+    // Audit yozuvi yo'naltirishdan OLDIN: `redirectNever` ichida
+    // NEXT_REDIRECT xatosi tashlanadi va undan keyingi kod hech qachon
+    // bajarilmaydi. Jurnal xatosi esa rad etishni to'xtatmaydi —
+    // `logPermissionDenied` hech qachon `throw` qilmaydi.
+    await logPermissionDenied({
+      userId: user.id,
+      reason: "role",
+      entity: "Page",
+      meta: { role: user.role, allowedRoles: roles },
+    });
+
     redirectNever("/forbidden");
   }
 
