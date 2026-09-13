@@ -1,6 +1,7 @@
 import type { Prisma } from "@prisma/client";
 import { db } from "./db";
 import { redirectNever, type SessionUser } from "./auth-guard";
+import { logPermissionDenied } from "./audit-denied";
 
 /**
  * MA'LUMOT DARAJASIDAGI DOIRA — IDOR himoyasi (Punkt 2)
@@ -251,8 +252,104 @@ export function paymentScope(user: SessionUser): Prisma.PaymentWhereInput {
  * // shundan keyingina yozuvni to'liq o'qish mumkin
  */
 
-async function assertExists<T>(row: T | null): Promise<T> {
+/**
+ * IDOR URINISHLARINI QAYD ETISH (H4c)
+ * ===================================
+ *
+ * NIMA EDI: doiradan tashqaridagi yozuvga urinish jimgina `/forbidden` ga
+ * yo'naltirilardi va HECH QANDAY iz qoldirmasdi. Ya'ni o'qituvchi URL dagi
+ * ID ni birma-bir o'zgartirib butun maktab o'quvchilarini titib ko'rsa ham,
+ * tizimda bu haqda bitta ham yozuv bo'lmasdi.
+ *
+ * NEGA XAVFLI: bu H4b da qayd etilgan rol rad etishidan ham qimmatliroq
+ * signal. Rol xatosi ko'pincha tasodifiy (eski xatcho'p, noto'g'ri havola).
+ * Doira xatosi esa deyarli har doim ATAYLAB: foydalanuvchi o'ziga
+ * ko'rsatilmagan ID ni qo'lda kiritgan. Aynan shu — ma'lumot o'g'irlash
+ * urinishining birinchi bosqichi.
+ *
+ * NIMA QILDIM: `assertExists` yo'naltirishdan oldin `PERMISSION_DENIED`
+ * (`reason: "scope"`) yozadi. Funksiya ICHKI bo'lgani va barcha
+ * chaqiruvchilarida `user` allaqachon mavjud bo'lgani uchun tashqi
+ * imzolarga va chaqiruv joylariga tegish kerak bo'lmadi — ya'ni bu qoidani
+ * chetlab o'tish imkoni ham yo'q: `assertCanAccess*` ning qaysi biri
+ * ishlatilsa ham audit avtomatik ishlaydi.
+ *
+ * JAVOB O'ZGARMADI: `/forbidden` ga yo'naltirish, "topilmadi" va "ruxsat
+ * yo'q" ning bir xil ko'rinishi — hammasi avvalgidek. Audit qaror emas,
+ * faqat yozuv.
+ */
+
+/**
+ * So'ralgan ID ni jurnalga yozishdan oldin tekshiradigan qat'iy shakl.
+ *
+ * NEGA KERAK: `entityId` — bu foydalanuvchi URL yoki forma orqali bergan
+ * XOM qiymat. Uni tekshirmasdan jurnalga yozish ikki xavf tug'diradi:
+ *   1. Log injection — hujumchi ID o'rniga yangi qatorli, boshqaruv
+ *      belgili yoki JSON-ga o'xshash matn yuborib, jurnalni o'qiydigan
+ *      vositani chalg'itishi mumkin.
+ *   2. Jadvalni shishirish — ID o'rniga megabaytlik matn yuborilsa, u
+ *      bazaga yozilardi.
+ *
+ * Loyihada ID lar cuid ko'rinishida, ya'ni harf/raqam/`-`/`_`. Shu
+ * to'plamdan chiqqan yoki 64 belgidan uzun qiymat ALLOWLIST bo'yicha rad
+ * etiladi (blocklist emas — nimani taqiqlashni sanab chiqish emas,
+ * nimaga ruxsat berishni sanab chiqish ishonchliroq).
+ *
+ * Rad etilganda ID yo'qoladi, lekin FAKT saqlanadi: `meta.entityIdFormat`
+ * = `"invalid"`. Amalda bu o'z-o'zidan kuchli signal — normal interfeys
+ * bunday qiymat yubormaydi.
+ */
+const SAFE_ENTITY_ID = /^[A-Za-z0-9_-]{1,64}$/;
+
+function safeEntityId(raw: string): string | null {
+  return SAFE_ENTITY_ID.test(raw) ? raw : null;
+}
+
+/** Rad etishni qayd etish uchun kontekst. Faqat ichki foydalanish. */
+type DeniedAccess = {
+  user: SessionUser;
+  /** Prisma model nomi: "Student", "Class", "Lesson", ... */
+  entity: string;
+  /** So'ralgan xom ID. Tekshiruvdan o'tmasa jurnalga yozilmaydi. */
+  requestedId: string | null;
+  /** Faqat kod yasagan qo'shimcha kontekst. */
+  meta?: Record<string, unknown>;
+};
+
+/**
+ * Yozuv topilmasa (= doiradan tashqarida) rad etishni qayd etadi va
+ * `/forbidden` ga yo'naltiradi.
+ *
+ * Generik `T` saqlangan: chaqiruvchida `(await assertExists(...)).id`
+ * ko'rinishidagi tip xavfsizligi o'zgarmaydi.
+ */
+async function assertExists<T>(
+  row: T | null,
+  denied: DeniedAccess
+): Promise<T> {
   if (!row) {
+    const safeId =
+      denied.requestedId === null ? null : safeEntityId(denied.requestedId);
+
+    // Audit yo'naltirishdan OLDIN: `redirectNever` NEXT_REDIRECT xatosini
+    // tashlaydi va undan keyingi kod hech qachon bajarilmaydi.
+    // `logPermissionDenied` hech qachon `throw` qilmaydi va o'z ichida
+    // dedupe qiladi — ya'ni jurnal xatosi ham, jurnal yuklamasi ham rad
+    // etish qaroriga ta'sir qilmaydi.
+    await logPermissionDenied({
+      userId: denied.user.id,
+      reason: "scope",
+      entity: denied.entity,
+      entityId: safeId,
+      meta: {
+        role: denied.user.role,
+        ...(denied.requestedId !== null && safeId === null
+          ? { entityIdFormat: "invalid" }
+          : {}),
+        ...(denied.meta ?? {}),
+      },
+    });
+
     redirectNever("/forbidden");
   }
   return row;
@@ -267,7 +364,13 @@ export async function assertCanAccessStudent(
     where: { AND: [{ id: studentId }, studentScope(user)] },
     select: { id: true },
   });
-  return (await assertExists(row)).id;
+  return (
+    await assertExists(row, {
+      user,
+      entity: "Student",
+      requestedId: studentId,
+    })
+  ).id;
 }
 
 /** Sinfga kirish huquqini tekshiradi. */
@@ -279,7 +382,9 @@ export async function assertCanAccessClass(
     where: { AND: [{ id: classId }, classScope(user)] },
     select: { id: true },
   });
-  return (await assertExists(row)).id;
+  return (
+    await assertExists(row, { user, entity: "Class", requestedId: classId })
+  ).id;
 }
 
 /** Darsga kirish huquqini tekshiradi (davomat uchun muhim). */
@@ -291,7 +396,9 @@ export async function assertCanAccessLesson(
     where: { AND: [{ id: lessonId }, lessonScope(user)] },
     select: { id: true },
   });
-  return (await assertExists(row)).id;
+  return (
+    await assertExists(row, { user, entity: "Lesson", requestedId: lessonId })
+  ).id;
 }
 
 /**
@@ -299,6 +406,10 @@ export async function assertCanAccessLesson(
  *
  * `assertCanAccessLesson` dan farqi: bu yerda sinf rahbarligi yetarli emas,
  * faqat fan o'qituvchisining o'zi (yoki ADMIN) o'tadi.
+ *
+ * Audit `meta.check = "grade"` bilan yoziladi — shunda jurnalda "darsni
+ * ko'rishga urindi" va "begona fandan baho qo'yishga urindi" holatlari
+ * farqlanadi. Ikkinchisi ancha jiddiy signal.
  */
 export async function assertCanGradeLesson(
   user: SessionUser,
@@ -308,7 +419,14 @@ export async function assertCanGradeLesson(
     where: { AND: [{ id: lessonId }, gradingLessonScope(user)] },
     select: { id: true },
   });
-  return (await assertExists(row)).id;
+  return (
+    await assertExists(row, {
+      user,
+      entity: "Lesson",
+      requestedId: lessonId,
+      meta: { check: "grade" },
+    })
+  ).id;
 }
 
 /**
@@ -321,6 +439,10 @@ export async function assertCanGradeLesson(
  *
  * Bu ham `gradingLessonScope` ga tayanadi, ya'ni sinf rahbarligi yetarli
  * emas — faqat fan o'qituvchisi (yoki ADMIN).
+ *
+ * Audit: bitta ID yo'q (juftlik bo'yicha izlanadi), shuning uchun
+ * `entityId` bo'sh qoladi va so'ralgan juftlik `meta` ga yoziladi —
+ * ikkovi ham xuddi shu `safeEntityId` filtridan o'tadi.
  */
 export async function assertCanGradeClassSubject(
   user: SessionUser,
@@ -333,7 +455,18 @@ export async function assertCanGradeClassSubject(
     },
     select: { id: true },
   });
-  return (await assertExists(row)).id;
+  return (
+    await assertExists(row, {
+      user,
+      entity: "Lesson",
+      requestedId: null,
+      meta: {
+        check: "gradeClassSubject",
+        classId: safeEntityId(classId),
+        subjectId: safeEntityId(subjectId),
+      },
+    })
+  ).id;
 }
 
 /** Bahoga kirish huquqini tekshiradi. */
@@ -345,7 +478,9 @@ export async function assertCanAccessGrade(
     where: { AND: [{ id: gradeId }, gradeScope(user)] },
     select: { id: true },
   });
-  return (await assertExists(row)).id;
+  return (
+    await assertExists(row, { user, entity: "Grade", requestedId: gradeId })
+  ).id;
 }
 
 /** Davomat yozuviga kirish huquqini tekshiradi. */
@@ -357,7 +492,13 @@ export async function assertCanAccessAttendance(
     where: { AND: [{ id: attendanceId }, attendanceScope(user)] },
     select: { id: true },
   });
-  return (await assertExists(row)).id;
+  return (
+    await assertExists(row, {
+      user,
+      entity: "Attendance",
+      requestedId: attendanceId,
+    })
+  ).id;
 }
 
 /** Jarima ballga kirish huquqini tekshiradi. */
@@ -369,7 +510,13 @@ export async function assertCanAccessPenalty(
     where: { AND: [{ id: penaltyId }, penaltyScope(user)] },
     select: { id: true },
   });
-  return (await assertExists(row)).id;
+  return (
+    await assertExists(row, {
+      user,
+      entity: "Penalty",
+      requestedId: penaltyId,
+    })
+  ).id;
 }
 
 /** Hisob-fakturaga kirish huquqini tekshiradi. */
@@ -381,7 +528,13 @@ export async function assertCanAccessInvoice(
     where: { AND: [{ id: invoiceId }, invoiceScope(user)] },
     select: { id: true },
   });
-  return (await assertExists(row)).id;
+  return (
+    await assertExists(row, {
+      user,
+      entity: "Invoice",
+      requestedId: invoiceId,
+    })
+  ).id;
 }
 
 /** To'lovga kirish huquqini tekshiradi. */
@@ -393,5 +546,11 @@ export async function assertCanAccessPayment(
     where: { AND: [{ id: paymentId }, paymentScope(user)] },
     select: { id: true },
   });
-  return (await assertExists(row)).id;
+  return (
+    await assertExists(row, {
+      user,
+      entity: "Payment",
+      requestedId: paymentId,
+    })
+  ).id;
 }
