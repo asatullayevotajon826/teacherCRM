@@ -11,29 +11,51 @@ import { z } from "zod";
  * `mustChangePassword` — User maydoni + middleware + /change-password sahifasi.
  * Parolni tiklash (SMS) — 10-bosqich.
  *
- * NEGA 8 DAN 12 GA OSHIRILDI (PR G1)
- * ----------------------------------
- * Tizimda o'quvchilarning bahosi, reytingi, ota-ona telefoni va shartnoma
- * summasi bor — ya'ni hisob buzilsa shaxsiy ma'lumot sizib chiqadi.
+ * NEGA CHEGARA 12 DAN 8 GA TUSHIRILDI (H4e)
+ * -----------------------------------------
+ * Bu — tizim egasining ataylab qabul qilgan qarori: 12 belgi amalda
+ * ishlashga xalal berdi. Admin har bir o'qituvchi uchun qo'lda 12 belgili
+ * parol o'ylab topishi kerak edi, natijada eng ehtimolli oqibat —
+ * qog'ozga yozib qo'yilgan yoki hammaga bir xil berilgan parol. Ya'ni
+ * qattiq qoida himoyani oshirmasdan, uni chetlab o'tishga majburlardi.
  *
- * 8 belgili parol bugungi kunda **himoya emas**: xesh o'g'irlansa oddiy
- * videokarta bilan barcha 8 belgili variantlarni tekshirib chiqish mumkin.
- * 12 belgi bu vaqtni minglab barobar oshiradi. bcrypt (10 rounds) sekin
- * xeshlash bilan yordam beradi, lekin qisqa parolni qutqarmaydi.
+ * HALOL BAHO: 8 belgi 12 dan ZAIFROQ. Agar parol xeshlari o'g'irlansa,
+ * 8 belgili parolni ochish sezilarli darajada arzonroq. Bu xavf yo'qolgani
+ * yo'q — u ongli ravishda qabul qilindi.
  *
- * Uzunlik yetarli emas: eng ko'p ishlatiladigan parollar lug'atdan bir zumda
- * topiladi. Shuning uchun pastda 4 qatlam tekshiruv bor:
- *   1) uzunlik (12–128)
+ * Shuning uchun qolgan qatlamlar TEGILMADI va ular endi yanada muhim:
+ *   1) uzunlik (8–128)
  *   2) harf + raqam birga
  *   3) mashhur/zaif parollar (lug'at hujumi)
  *   4) klaviatura va takror naqshlari ("aaaa", "123456", "qwerty")
+ *
+ * Qisqa parolni himoya qiladigan asosiy to'siq — ONLAYN urinishni
+ * cheklash: `rate-limit-db.ts` (login uchun 5 urinish / 15 daqiqa, IP
+ * uchun 20) va bcrypt (10 rounds) sekin xeshlash. Ya'ni brauzer orqali
+ * parolni sinab topish amalda imkonsiz; xavf faqat baza o'g'irlangan
+ * holatda qoladi.
+ *
+ * KELAJAK UCHUN TAVSIYA (hozir bajarilmadi): 8 belgiga ruxsat berilgani
+ * uchun ikki faktorli kirish yoki parol o'rniga SMS-kod eng kuchli
+ * yaxshilanish bo'ladi. Uzunlikni qaytarib oshirish o'rniga shu yo'l
+ * tanlanishi kerak.
  *
  * MUHIM: bu qoidalar TEKSHIRUV, sir emas. Parolning o'zi hech qayerga
  * yozilmaydi — na logga, na auditga (`audit.ts` redaksiya qiladi), na
  * xato xabariga.
  */
 
-export const MIN_PASSWORD_LENGTH = 12;
+/**
+ * Yagona manba. Bu raqamni O'ZGARTIRISH KIFOYA — quyidagi hammasi
+ * avtomatik ergashadi:
+ *   - `passwordSchema` (server tekshiruvi)
+ *   - `passwordRuleText` (formadagi qoida matni, uch tilda)
+ *   - `teacher-form.tsx` dagi `minLength` (brauzer tekshiruvi)
+ *   - `isStrongInitialPassword` (Excel import orqali hisob yaratish)
+ *
+ * Ya'ni tizimda parol qoidasi IKKINCHI nusxada yozilmagan.
+ */
+export const MIN_PASSWORD_LENGTH = 8;
 
 /**
  * bcrypt 72 baytdan keyingi qismni JIMGINA tashlab yuboradi. 128 belgi
@@ -44,7 +66,7 @@ export const MAX_PASSWORD_LENGTH = 128;
 
 /**
  * Eng ko'p uchraydigan zaif parollar. Hujumchi birinchi navbatda shularni
- * sinaydi, shuning uchun 12 belgidan uzun bo'lsa ham ruxsat berilmaydi
+ * sinaydi, shuning uchun uzunligi yetarli bo'lsa ham ruxsat berilmaydi
  * (masalan "parolparolparol").
  *
  * Ro'yxat ataylab QISQA: uzun lug'at bu yerda emas, serverdagi urinish
