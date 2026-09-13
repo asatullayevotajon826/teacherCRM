@@ -35,6 +35,30 @@ vi.mock("@/lib/auth-guard", () => ({
   },
 }));
 
+/**
+ * UCHINCHI MOCK — NEGA KERAK (H4d).
+ *
+ * H4c dan keyin `scope.ts` `audit-denied.ts` ni ham import qiladi (rad
+ * etishni `AuditLog` ga yozish uchun). U esa o'z navbatida `audit.ts` va
+ * `rate-limit-db.ts` ni, ular orqali `logger.ts` ni, logger esa `env.ts`
+ * ni tortadi. `env.ts` modul yuklanayotgan paytning O'ZIDA `DATABASE_URL`
+ * va `AUTH_SECRET` ni talab qiladi va ular bo'lmasa xato tashlaydi.
+ *
+ * Natijada bu fayl bitta ham testni ishga tushira olmasdan yiqilardi
+ * ("Failed Suite", 0 ta test) — ya'ni IDOR doiralarining butun tekshiruvi
+ * jimgina yo'qolgan edi. Eng xavflisi shuki, qolgan 140 ta test o'tayotgani
+ * uchun bu nosozlik "hammasi joyida" degan taassurot berardi.
+ *
+ * Yechim mock: bu testlar rad etish YOZUVINI emas, doira FILTRLARINI
+ * tekshiradi. `logPermissionDenied` ning haqiqiy xatti-harakati bu yerga
+ * aloqador emas, shuning uchun uni bo'sh funksiya bilan almashtiramiz —
+ * `db` va `auth-guard` uchun qilinganidek. Ishlab chiqarish kodi
+ * o'zgartirilmaydi: haqiqiy serverda `env` har doim mavjud.
+ */
+vi.mock("@/lib/audit-denied", () => ({
+  logPermissionDenied: async () => {},
+}));
+
 import {
   attendanceScope,
   classScope,
