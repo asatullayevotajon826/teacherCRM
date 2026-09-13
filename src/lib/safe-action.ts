@@ -2,6 +2,7 @@ import { Prisma, type Role } from "@prisma/client";
 import { z } from "zod";
 import { requireAuth, requireRole, type SessionUser } from "./auth-guard";
 import { logAudit, type AuditAction } from "./audit";
+import { logPermissionDenied } from "./audit-denied";
 import { logError } from "./logger";
 import { consumeDb } from "./rate-limit-db";
 import { getRequestIp } from "./rate-limit";
@@ -44,6 +45,19 @@ import { getRequestIp } from "./rate-limit";
  * xeshi, `DATABASE_URL` o'chiriladi), `meta` ni `redactMeta` tozalaydi.
  * Foydalanuvchiga ko'rinadigan xabar esa O'ZGARMADI — texnik detal, sxema
  * tafsiloti va Prisma kodlari hamon tashqariga chiqmaydi.
+ *
+ * DOIMIY IZ (H4b)
+ * ---------------
+ * `logError` konsolga yozadi — u jarayon qayta ishga tushsa yo'qoladi va
+ * SQL bilan so'rab ko'rilmaydi. Shuning uchun so'rov cheklovi rad etishi
+ * endi `AuditLog` ga ham `PERMISSION_DENIED` bilan tushadi: hodisadan
+ * keyin "kim, qachon, qaysi action'da chegaraga urildi" degan savolga
+ * javob bo'ladi. Konsol kuzatuvi olib tashlanmadi — ikkisi bir-birini
+ * to'ldiradi.
+ *
+ * Rol rad etishi bu faylda emas, `auth-guard.ts` dagi `requireRole` ichida
+ * qayd etiladi — manba bitta bo'lishi uchun (sahifalar ham shu yo'ldan
+ * o'tadi).
  */
 
 export type ActionOk<T> = { ok: true; data: T };
@@ -219,13 +233,9 @@ export function createAction<TSchema extends z.ZodTypeAny, TResult>(
     // allaqachon to'xtatilgan.
     //
     // PR G4a: hisob bazada (`consumeDb`), shuning uchun `await`.
+    const rule = options.rateLimit ?? ACTION_RULE;
     const ip = await getRequestIp();
-    if (
-      !(await consumeDb(
-        `action:${user.id}:${ip}`,
-        options.rateLimit ?? ACTION_RULE
-      ))
-    ) {
+    if (!(await consumeDb(`action:${user.id}:${ip}`, rule))) {
       // Cheklovga urilish — xato emas, lekin XAVFSIZLIK SIGNALI.
       // Oddiy foydalanuvchi daqiqada 40 ta yozish amalini bajarmaydi;
       // bu chegaraga urilgan hisob deyarli har doim skript (yoki
@@ -236,6 +246,22 @@ export function createAction<TSchema extends z.ZodTypeAny, TResult>(
         userId: user.id,
         role: user.role,
       });
+
+      // H4b: konsoldan tashqari DOIMIY iz ham qoladi. `scope` faqat kod
+      // yasagan nom (entity + action), foydalanuvchi kiritmasi emas —
+      // shuning uchun uni jurnalga yozish xavfsiz. IP yozilmaydi.
+      await logPermissionDenied({
+        userId: user.id,
+        reason: "rateLimit",
+        entity: options.audit?.entity ?? "Action",
+        meta: {
+          scope,
+          role: user.role,
+          limit: rule.limit,
+          windowMs: rule.windowMs,
+        },
+      });
+
       return { ok: false, error: RATE_LIMIT_MESSAGE };
     }
 
