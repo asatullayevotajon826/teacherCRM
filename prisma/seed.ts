@@ -2,6 +2,8 @@ import { PrismaClient, Role } from "@prisma/client";
 import bcrypt from "bcryptjs";
 import { env } from "../src/lib/env";
 import { passwordError } from "../src/lib/password";
+import { describeErrorSafely } from "../src/lib/audit";
+import { logError } from "../src/lib/logger";
 
 const db = new PrismaClient();
 
@@ -26,6 +28,14 @@ const db = new PrismaClient();
  *   3. `SEED_PASSWORD` parol siyosatidan o'tishi shart;
  *   4. nishon lokal bo'lmasa, demo hisoblar `mustChangePassword: true` bilan
  *      yaratiladi — birinchi kirishda parol almashtirish majburiy bo'ladi.
+ *
+ * LOG GIGIENASI (H4a): fayl oxiridagi `catch` ilgari xom xatoni
+ * `console.error` ga berardi. Prisma xatosi matnida yozilmoqchi bo'lgan
+ * qator qiymatlari (email, parol hash) va ulanish satri bo'ladi, stack esa
+ * fayl yo'llarini oshkor qiladi. Seed masofaviy nishonda yoki CI da
+ * ishlaganda bu matn uchinchi tomon logiga tushadi. Endi xato `logError`
+ * orqali yoziladi va lokal ishlab chiqishdan tashqari holatda
+ * `describeErrorSafely` bilan tozalanadi.
  */
 
 /** Lokal deb hisoblanadigan hostlar. Boshqa hamma narsa "masofaviy". */
@@ -45,6 +55,15 @@ function databaseHost(url: string): string | null {
   } catch {
     return null;
   }
+}
+
+/**
+ * Nishon baza lokalmi? Host o'qib bo'lmasa `false` — shubhada eng qattiq
+ * yo'l tanlanadi (fail-closed), ya'ni log ham tozalanadi.
+ */
+function targetIsLocalDatabase(): boolean {
+  const host = databaseHost(env.DATABASE_URL);
+  return host !== null && LOCAL_DB_HOSTS.has(host);
 }
 
 /**
@@ -114,7 +133,7 @@ async function main() {
   }
 
   console.log(
-    `\uD83C\uDF31 Seed boshlandi... (nishon: ${
+    `🌱 Seed boshlandi... (nishon: ${
       targetIsLocal ? "lokal baza" : "MASOFAVIY baza — SEED_ALLOW_REMOTE=1"
     })`
   );
@@ -134,7 +153,14 @@ async function main() {
       update: {
         fullName: u.fullName,
         role: u.role,
-        isActive: true,
+        // `isActive` BU YERDA ATAYLAB YO'Q (H4a).
+        //
+        // Ilgari `isActive: true` turardi. Natijada ADMIN tomonidan
+        // BLOKLANGAN demo hisob (masalan ishdan ketgan o'qituvchi yoki
+        // suiiste'mol qilgan hisob) seed har qayta ishlaganda yana
+        // faollashib qolardi — ya'ni seed bloklashni bekor qiladigan
+        // yo'lga aylanardi. Hisobning faol/bloklangan holati faqat ADMIN
+        // qaroriga bog'liq bo'lishi kerak, seed unga tegmaydi.
       },
       create: {
         email: u.email,
@@ -149,21 +175,21 @@ async function main() {
     });
   }
   console.log(
-    `\u2705 ${users.length} ta foydalanuvchi. Yangi hisob paroli: SEED_PASSWORD. Mavjud hisob paroli o'zgarmaydi.`
+    `✅ ${users.length} ta foydalanuvchi. Yangi hisob paroli: SEED_PASSWORD. Mavjud hisob paroli o'zgarmaydi.`
   );
 
   const subjects = [
-    { nameUz: "Matematika", nameRu: "\u041C\u0430\u0442\u0435\u043C\u0430\u0442\u0438\u043A\u0430", nameEn: "Mathematics" },
-    { nameUz: "Fizika", nameRu: "\u0424\u0438\u0437\u0438\u043A\u0430", nameEn: "Physics" },
-    { nameUz: "Ona tili", nameRu: "\u0420\u043E\u0434\u043D\u043E\u0439 \u044F\u0437\u044B\u043A", nameEn: "Native language" },
-    { nameUz: "Ingliz tili", nameRu: "\u0410\u043D\u0433\u043B\u0438\u0439\u0441\u043A\u0438\u0439 \u044F\u0437\u044B\u043A", nameEn: "English" },
-    { nameUz: "Tarix", nameRu: "\u0418\u0441\u0442\u043E\u0440\u0438\u044F", nameEn: "History" },
+    { nameUz: "Matematika", nameRu: "Математика", nameEn: "Mathematics" },
+    { nameUz: "Fizika", nameRu: "Физика", nameEn: "Physics" },
+    { nameUz: "Ona tili", nameRu: "Родной язык", nameEn: "Native language" },
+    { nameUz: "Ingliz tili", nameRu: "Английский язык", nameEn: "English" },
+    { nameUz: "Tarix", nameRu: "История", nameEn: "History" },
   ];
   for (const s of subjects) {
     const exists = await db.subject.findFirst({ where: { nameUz: s.nameUz } });
     if (!exists) await db.subject.create({ data: s });
   }
-  console.log(`\u2705 ${subjects.length} ta fan yaratildi`);
+  console.log(`✅ ${subjects.length} ta fan yaratildi`);
 
   const admin = await db.user.findUnique({ where: { email: "admin@maktab.uz" } });
   const criteria = [
@@ -180,7 +206,7 @@ async function main() {
       });
     }
   }
-  console.log(`\u2705 ${criteria.length} ta jarima mezoni yaratildi`);
+  console.log(`✅ ${criteria.length} ta jarima mezoni yaratildi`);
 
   const yearName = "2025-2026";
   let year = await db.academicYear.findFirst({ where: { name: yearName } });
@@ -209,7 +235,7 @@ async function main() {
         },
       });
     }
-    console.log("\u2705 O'quv yili va 4 ta chorak yaratildi");
+    console.log("✅ O'quv yili va 4 ta chorak yaratildi");
   }
 
   const teacherUser = await db.user.findUnique({
@@ -282,9 +308,9 @@ async function main() {
       });
     }
   }
-  console.log("\u2705 Demo sinf 9-A va 2 ta o'quvchi yaratildi");
+  console.log("✅ Demo sinf 9-A va 2 ta o'quvchi yaratildi");
 
-  console.log("\uD83C\uDF31 Seed yakunlandi.");
+  console.log("🌱 Seed yakunlandi.");
 }
 
 main()
@@ -292,7 +318,33 @@ main()
     await db.$disconnect();
   })
   .catch(async (e) => {
-    console.error("\u274C Seed xatosi:", e);
+    /*
+     * XATO LOGI TOZALANADI (H4a).
+     *
+     * Ilgari shu yerda `console.error("❌ Seed xatosi:", e)` turardi va xom
+     * `Error` obyekti chop etilardi. Bu ikki xil sizishga yo'l ochadi:
+     *   1. Prisma xato MATNI — yozilmoqchi bo'lgan qator qiymatlari (email,
+     *      `passwordHash`) va ba'zan `postgresql://user:parol@host/db`
+     *      ulanish satri;
+     *   2. stack — server fayl yo'llari va ichki tuzilma (razvedka uchun).
+     *
+     * Endi:
+     *   - lokal nishon + `NODE_ENV !== "production"` bo'lsa, xom xato
+     *     `logError` orqali chiqadi — nosozlikni topish uchun stack kerak,
+     *     bu log esa lokal terminaldan tashqariga chiqmaydi;
+     *   - qolgan HAMMA holatda (masofaviy nishon, CI, prod, host noaniq)
+     *     xato `describeErrorSafely` bilan tozalanadi: URL, email, telefon
+     *     va bcrypt hash o'rniga o'rin egallovchi qo'yiladi, matn 500
+     *     belgiga qisqaradi va stack butunlay tashlanadi.
+     */
+    const safeToShowStack =
+      env.NODE_ENV !== "production" && targetIsLocalDatabase();
+
+    logError(
+      "prisma/seed",
+      safeToShowStack ? e : new Error(describeErrorSafely(e))
+    );
+
     await db.$disconnect();
     process.exit(1);
   });
